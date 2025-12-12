@@ -22,10 +22,12 @@ If you find this library useful, consider supporting its development! Your contr
 
 ## Important note about CloudEdge sessions
 
-CloudEdge allows only **one active session per account**. If you log in to this integration using your main account, the CloudEdge app on your phone will be logged out. 
+CloudEdge allows only **one active session per account**. If you log in to this integration using your main account, the CloudEdge app on your phone will be logged out.
 
-### Recommendation:
+### Recommendation
+
 To avoid disruptions, it is recommended to:
+
 1. Create a **second CloudEdge account**.
 2. Share access to your homes/devices with this second account.
 3. Use the second account credentials for this integration.
@@ -49,11 +51,12 @@ This ensures that your main account remains logged in on your phone while the in
 
 1. Download the latest release from GitHub
 2. Extract the files to your Home Assistant `custom_components` directory:
-   ```
+
+   ```text
    custom_components/cloudedge/
    ```
-3. Restart Home Assistant
 
+3. Restart Home Assistant
 
 ## Enable Debug Logging
 
