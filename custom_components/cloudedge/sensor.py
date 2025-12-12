@@ -22,7 +22,7 @@ from .const import (
     SENSOR_PARAMETERS,
     ENABLED_BY_DEFAULT_SENSOR_PARAMS,
 )
-from cloudedge.iot_parameters import (
+from .cloudedge.iot_parameters import (
     IOT_PARAMETERS,
     BOOLEAN_PARAMETERS,
     PERCENTAGE_PARAMETERS,

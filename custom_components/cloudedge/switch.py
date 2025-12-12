@@ -17,7 +17,7 @@ from .const import (
     SWITCH_PARAMETERS,
     ENABLED_BY_DEFAULT_SWITCH_PARAMS,
 )
-from cloudedge.iot_parameters import (
+from .cloudedge.iot_parameters import (
     IOT_PARAMETERS,
     BOOLEAN_PARAMETERS,
     get_parameter_name,
@@ -215,7 +215,7 @@ class CloudEdgeConfigSwitch(CloudEdgeBaseSwitch):
                     device_name = device_data['name']
                     
                     # Convert parameter code to parameter name (API expects names, not codes)
-                    from cloudedge.iot_parameters import get_parameter_name
+                    from .cloudedge.iot_parameters import get_parameter_name
                     param_name = get_parameter_name(self._param_key)
                     
                     # Use the client's set_device_parameter method

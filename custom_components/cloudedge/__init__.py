@@ -168,8 +168,8 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Validating CloudEdge authentication")
         try:
             # Import here to avoid import issues during startup
-            from cloudedge import CloudEdgeClient
-            from cloudedge.exceptions import AuthenticationError
+            from .cloudedge import CloudEdgeClient
+            from .cloudedge.exceptions import AuthenticationError
 
             if self.client is None:
                 _LOGGER.debug("Initializing CloudEdge client for validation")
@@ -259,8 +259,8 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
         self._last_updated_device = None
         
         # Import here to avoid import issues during startup
-        from cloudedge import CloudEdgeClient
-        from cloudedge.exceptions import AuthenticationError, CloudEdgeError
+        from .cloudedge import CloudEdgeClient
+        from .cloudedge.exceptions import AuthenticationError, CloudEdgeError
 
         try:
             if self.client is None:
@@ -386,7 +386,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                                 
                                 if iot_data and isinstance(iot_data, dict):
                                     # Process IoT parameters
-                                    from cloudedge.iot_parameters import get_parameter_name, format_parameter_value
+                                    from .cloudedge.iot_parameters import get_parameter_name, format_parameter_value
                                     
                                     processed_config = {}
                                     for param_code, value in iot_data.items():
@@ -522,7 +522,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 
                 if iot_data and isinstance(iot_data, dict):
                     # Process IoT parameters for display
-                    from cloudedge.iot_parameters import get_parameter_name, format_parameter_value
+                    from .cloudedge.iot_parameters import get_parameter_name, format_parameter_value
                     
                     processed_config = {}
                     for param_code, value in iot_data.items():

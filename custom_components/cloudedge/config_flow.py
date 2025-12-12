@@ -57,8 +57,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
     # Import here to avoid issues during startup
-    from cloudedge import CloudEdgeClient
-    from cloudedge.exceptions import AuthenticationError, CloudEdgeError
+    from .cloudedge import CloudEdgeClient
+    from .cloudedge.exceptions import AuthenticationError, CloudEdgeError
 
     username = data[CONF_USERNAME]
     password = data[CONF_PASSWORD]
