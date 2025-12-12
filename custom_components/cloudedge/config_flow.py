@@ -71,15 +71,22 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     try:
         # Create client and test authentication
         _LOGGER.debug("Creating CloudEdge client for %s", username)
-        _LOGGER.debug("Country code: %s, Phone code: %s", country_code, phone_code)
+        _LOGGER.debug("Country code: %s, Phone code: %s, region: %s, base_url: %s", country_code, phone_code, region, base_url)
         
+        # Normalize region value: treat AUTO as None so that client infers from country_code
+        normalized_region = (region if region and str(region).upper() != "AUTO" else None)
+
+        # If phone code is empty or None, try to deduce from selected country code
+        if not phone_code:
+            phone_code = COUNTRY_CODES.get(country_code, DEFAULT_PHONE_CODE)
+
         client = CloudEdgeClient(
             username=username,
             password=password,
             country_code=country_code,
             phone_code=phone_code,
             debug=True,  # Enable debug to see API errors
-            region=region if region != "AUTO" else None,
+            region=normalized_region,
             base_url=base_url,
             openapi_base_url=openapi_base_url,
         )
@@ -106,6 +113,9 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             "Successfully validated CloudEdge credentials. Found %d devices.",
             device_count,
         )
+
+        # Update incoming user_input with any derived values (phone code)
+        user_input[CONF_PHONE_CODE] = phone_code
 
         # Return info that will be stored in the config entry
         return {
