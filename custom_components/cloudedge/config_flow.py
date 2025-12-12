@@ -114,8 +114,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             device_count,
         )
 
-        # Update incoming user_input with any derived values (phone code)
-        user_input[CONF_PHONE_CODE] = phone_code
+        # Update incoming 'data' with any derived values (phone code)
+        data[CONF_PHONE_CODE] = phone_code
 
         # Return info that will be stored in the config entry
         return {
