@@ -175,6 +175,10 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Initializing CloudEdge client for validation")
                 # Use config directory for session cache
                 cache_path = os.path.join(self.hass.config.config_dir, "cloudedge_session_cache")
+                # Sanity check credentials are present - fail early if not
+                if not self.username or not self.password:
+                    _LOGGER.error("CloudEdge credentials missing: username or password not set in config entry")
+                    raise AuthenticationError("Missing credentials in config entry")
                 self.client = CloudEdgeClient(
                     username=self.username,
                     password=self.password,
@@ -185,6 +189,12 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
+                )
+                _LOGGER.debug(
+                    "CloudEdge client initialized for validation for user %s (region=%s, base_url=%s)",
+                    self.username,
+                    self.config_entry.data.get(CONF_REGION),
+                    self.config_entry.data.get(CONF_BASE_URL),
                 )
 
             # Check if we have valid session data
@@ -257,13 +267,27 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Initializing CloudEdge client")
                 # Use config directory for session cache
                 cache_path = os.path.join(self.hass.config.config_dir, "cloudedge_session_cache")
+                # Sanity check credentials are present - fail early if not
+                if not self.username or not self.password:
+                    _LOGGER.error("CloudEdge credentials missing: username or password not set in config entry")
+                    raise AuthenticationError("Missing credentials in config entry")
                 self.client = CloudEdgeClient(
                     username=self.username,
                     password=self.password,
                     country_code=self.country_code,
                     phone_code=self.phone_code,
                     debug=True,  # Enable debug logging
-                    session_cache_file=cache_path
+                    session_cache_file=cache_path,
+                    # Pass region and URL overrides from the config entry to ensure consistency
+                    region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
+                    base_url=self.config_entry.data.get(CONF_BASE_URL),
+                    openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
+                )
+                _LOGGER.debug(
+                    "CloudEdge client initialized for user %s (region=%s, base_url=%s)",
+                    self.username,
+                    self.config_entry.data.get(CONF_REGION),
+                    self.config_entry.data.get(CONF_BASE_URL),
                 )
 
             # Always validate and authenticate before making API calls
