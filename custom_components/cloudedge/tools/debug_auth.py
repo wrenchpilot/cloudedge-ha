@@ -54,6 +54,15 @@ def run_debug(username, password, country_code, phone_code, region, base_url, op
                 print("userToken:", mask_secret(session.get("userToken")))
         else:
             print("Authentication returned False (unexpected)")
+        # After successful auth, list devices and optionally try snapshot tests
+        try:
+            devices = client.get_all_devices()
+            print(f"Found {len(devices)} devices")
+            for d in devices:
+                print(f"  - {d.get('name')} (SN: {d.get('serial_number')})")
+        except Exception as e:
+            print("Could not list devices:")
+            traceback.print_exc()
 
     except AuthenticationError as e:
         print("AuthenticationError:")
@@ -76,6 +85,63 @@ if __name__ == "__main__":
     parser.add_argument("--region", default="AUTO")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--openapi-base-url", default="")
+    parser.add_argument("--list-devices", action="store_true", help="List devices after authentication")
+    parser.add_argument("--snapshot", help="Attempt to retrieve a snapshot for the given serial number")
 
     args = parser.parse_args()
     run_debug(args.username, args.password, args.country_code, args.phone_code, args.region, args.base_url, args.openapi_base_url)
+
+    # If requested, attempt snapshot retrieval
+    if getattr(args, 'snapshot'):
+        try:
+            client = CloudEdgeClient(
+                username=args.username,
+                password=args.password,
+                country_code=args.country_code,
+                phone_code=args.phone_code,
+                debug=True,
+                session_cache_file="/tmp/cloudedge_debug_cache",
+                region=(args.region if args.region and str(args.region).upper() != "AUTO" else None),
+                base_url=(args.base_url or None),
+                openapi_base_url=(args.openapi_base_url or None),
+            )
+            client.authenticate()
+            print("Trying snapshot for serial:", args.snapshot)
+            # Try to fetch device config and find snapshotable info
+            cfg = client.get_device_config(args.snapshot)
+            if cfg and 'result' in cfg and 'iot' in cfg['result']:
+                iot = cfg['result']['iot']
+            elif cfg and isinstance(cfg, dict):
+                iot = cfg
+            else:
+                iot = {}
+
+            # Look for ONVIF_URL (123), RTMP (130), IP (126)
+            for code, value in iot.items():
+                print(f"Param {code} -> {value}")
+            cand = []
+            onvif = iot.get('123') or iot.get('ONVIF_URL')
+            rtmp = iot.get('130') or iot.get('RTMP_STREAM')
+            ipaddr = iot.get('126') or iot.get('IP_ADDRESS')
+            if onvif and isinstance(onvif, str):
+                cand.append(onvif)
+            if rtmp and isinstance(rtmp, str):
+                cand.append(rtmp)
+            if ipaddr:
+                cand.extend([
+                    f"http://{ipaddr}/cgi-bin/snapshot.jpg",
+                    f"http://{ipaddr}/snapshot.jpg",
+                ])
+
+            for url in cand:
+                try:
+                    print("Trying", url)
+                    resp = client._session.get(url, timeout=10, verify=False)
+                    print(url, resp.status_code, resp.headers.get('Content-Type'))
+                    if resp.status_code == 200:
+                        print("Got image bytes, length=", len(resp.content))
+                        break
+                except Exception as ex:
+                    print("Error fetching", url, ex)
+        except Exception:
+            traceback.print_exc()

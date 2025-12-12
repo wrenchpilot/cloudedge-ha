@@ -46,8 +46,14 @@ async def async_setup_entry(
         return
 
     sensors = []
+    # Track which parameter sensors we've created per device to prevent duplicates
+    # Format: coordinator._created_sensors = {serial_number: set(parameter_code)}
+    if not hasattr(coordinator, '_created_sensors'):
+        coordinator._created_sensors = {}
+
     for serial_number, device_info in coordinator.data.items():
-        if config := device_info.get("configuration"):
+        config = device_info.get("configuration")
+        if config:
             device_name = device_info.get("name", serial_number)
             _LOGGER.info("Device %s has %d parameters", device_name, len(config))
             
@@ -65,9 +71,9 @@ async def async_setup_entry(
                         coordinator, serial_number, device_info, param_name, param_key
                     ))
             
-            for param_code, param_info in config.items():
-                if param_code not in SENSOR_PARAMETERS.values():
-                    iot_param_info = IOT_PARAMETERS.get(param_code)
+                for param_code, param_info in config.items():
+                    if param_code not in SENSOR_PARAMETERS.values():
+                        iot_param_info = IOT_PARAMETERS.get(param_code)
                     if iot_param_info:
                         param_name = iot_param_info["name"].lower()
                     else:
@@ -75,16 +81,51 @@ async def async_setup_entry(
                     enabled = param_code in ENABLED_BY_DEFAULT_SENSOR_PARAMS
                     if enabled:
                         _LOGGER.debug("Creating enabled-by-default sensor: %s (code %s)", param_name, param_code)
+                    # Avoid creating the same sensor twice
+                    created_set = coordinator._created_sensors.setdefault(serial_number, set())
+                    if param_code in created_set:
+                        continue
                     sensors.append(CloudEdgeGenericSensor(
                         coordinator, serial_number, device_info, param_name, param_code, param_info
                     ))
-        else:
-            sensors.append(CloudEdgeDeviceStatusSensor(
-                coordinator, serial_number, device_info
-            ))
+                    created_set.add(param_code)
+        # Always add a status sensor for the device (useful even if there are config sensors)
+        sensors.append(CloudEdgeDeviceStatusSensor(
+            coordinator, serial_number, device_info
+        ))
 
     _LOGGER.info("Adding %d sensor entities", len(sensors))
     async_add_entities(sensors)
+
+    # Add a coordinator listener to add sensors dynamically when new configuration appears
+    async def _handle_coordinator_update():
+        new_entities = []
+        for serial_number, device_info in coordinator.data.items():
+            config = device_info.get('configuration') or {}
+            created_set = coordinator._created_sensors.setdefault(serial_number, set())
+            for param_code, param_info in config.items():
+                if param_code in created_set:
+                    continue
+                # Don't double-create standard sensors listed in SENSOR_PARAMETERS
+                if param_code in SENSOR_PARAMETERS.values():
+                    # These are created above during setup for named sensors (skip here)
+                    continue
+                # Create a generic sensor for this parameter
+                try:
+                    from .cloudedge.iot_parameters import get_parameter_name
+                    param_name = get_parameter_name(param_code)
+                except Exception:
+                    param_name = f"param_{param_code}"
+
+                new_entities.append(
+                    CloudEdgeGenericSensor(coordinator, serial_number, device_info, param_name, param_code, param_info)
+                )
+                created_set.add(param_code)
+        if new_entities:
+            _LOGGER.info("Adding %d new sensor entities from updated configuration", len(new_entities))
+            async_add_entities(new_entities)
+
+    coordinator.async_add_listener(_handle_coordinator_update)
 
 
 class CloudEdgeBaseSensor(CoordinatorEntity[CloudEdgeCoordinator], SensorEntity):
