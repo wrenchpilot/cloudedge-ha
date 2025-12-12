@@ -25,7 +25,11 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_PHONE_CODE,
     CONF_REFRESH_INTERVAL,
+    CONF_REGION,
+    CONF_BASE_URL,
+    CONF_OPENAPI_BASE_URL,
     DEFAULT_REFRESH_INTERVAL,
+    DEFAULT_REGION,
 )
 from .services import async_setup_services, async_unload_services
 
@@ -49,6 +53,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     country_code = entry.data[CONF_COUNTRY_CODE]
     phone_code = entry.data[CONF_PHONE_CODE]
     refresh_interval = entry.data.get(CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL)
+    region = entry.data.get(CONF_REGION, DEFAULT_REGION)
+    base_url = entry.data.get(CONF_BASE_URL)
+    openapi_base_url = entry.data.get(CONF_OPENAPI_BASE_URL)
 
     # Create coordinator
     coordinator = CloudEdgeCoordinator(
@@ -174,7 +181,10 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     country_code=self.country_code,
                     phone_code=self.phone_code,
                     debug=True,  # Enable debug logging
-                    session_cache_file=cache_path
+                    session_cache_file=cache_path,
+                    region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
+                    base_url=self.config_entry.data.get(CONF_BASE_URL),
+                    openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
                 )
 
             # Check if we have valid session data

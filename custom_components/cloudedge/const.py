@@ -6,12 +6,16 @@ DOMAIN = "cloudedge"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_COUNTRY_CODE = "country_code"
+CONF_REGION = "region"
+CONF_BASE_URL = "base_url"
+CONF_OPENAPI_BASE_URL = "openapi_base_url"
 CONF_PHONE_CODE = "phone_code"
 CONF_REFRESH_INTERVAL = "refresh_interval"
 
 # Default values
 DEFAULT_REFRESH_INTERVAL = 5  # minutes
 DEFAULT_COUNTRY_CODE = "US"
+DEFAULT_REGION = "AUTO"
 DEFAULT_PHONE_CODE = "+1"
 
 # Supported country codes and phone codes
@@ -37,6 +41,9 @@ COUNTRY_CODES = {
     "GR": "+30",
     "IE": "+353",
 }
+
+# Supported regions. AUTO means pick based on country_code, otherwise explicit region
+REGIONS = ["AUTO", "EU", "US"]
 
 # Device types mapping
 DEVICE_TYPE_CAMERA = "Camera"

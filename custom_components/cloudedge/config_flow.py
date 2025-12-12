@@ -18,9 +18,14 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_PHONE_CODE,
     CONF_REFRESH_INTERVAL,
+    CONF_REGION,
+    CONF_BASE_URL,
+    CONF_OPENAPI_BASE_URL,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_COUNTRY_CODE,
     DEFAULT_PHONE_CODE,
+    DEFAULT_REGION,
+    REGIONS,
     COUNTRY_CODES,
 )
 
@@ -39,6 +44,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_REFRESH_INTERVAL, default=DEFAULT_REFRESH_INTERVAL): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=60)
         ),
+        vol.Optional(CONF_REGION, default=DEFAULT_REGION): vol.In(list(REGIONS)),
+        vol.Optional(CONF_BASE_URL, default=""): str,
+        vol.Optional(CONF_OPENAPI_BASE_URL, default=""): str,
     }
 )
 
@@ -55,6 +63,9 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     username = data[CONF_USERNAME]
     password = data[CONF_PASSWORD]
     country_code = data[CONF_COUNTRY_CODE]
+    region = data.get(CONF_REGION)
+    base_url = data.get(CONF_BASE_URL) or None
+    openapi_base_url = data.get(CONF_OPENAPI_BASE_URL) or None
     phone_code = data[CONF_PHONE_CODE]
 
     try:
@@ -68,6 +79,9 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             country_code=country_code,
             phone_code=phone_code,
             debug=True,  # Enable debug to see API errors
+            region=region if region != "AUTO" else None,
+            base_url=base_url,
+            openapi_base_url=openapi_base_url,
         )
 
         # Test authentication
