@@ -52,6 +52,7 @@ def run_debug(username, password, country_code, phone_code, region, base_url, op
             print("Session data keys:", list(session.keys()))
             if session.get("userToken"):
                 print("userToken:", mask_secret(session.get("userToken")))
+            print("iotPlatformKeys:", session.get('iotPlatformKeys'))
         else:
             print("Authentication returned False (unexpected)")
         # After successful auth, list devices and optionally try snapshot tests

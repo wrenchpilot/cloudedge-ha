@@ -659,19 +659,68 @@ class CloudEdgeClient:
                         details={"response": response_data}
                     )
                 
-                # Extract IoT platform keys if available
+                # Extract IoT platform keys if available using multiple possible structures
                 iot_platform_keys = {}
-                if 'iot' in result and 'pfKey' in result['iot']:
-                    iot_platform_keys = result['iot']['pfKey']
+                try:
+                    iot = result.get('iot')
+                    if isinstance(iot, dict):
+                        # Common case: pfKey container
+                        if 'pfKey' in iot and isinstance(iot['pfKey'], dict):
+                            iot_platform_keys = iot['pfKey']
+                        else:
+                            # Search for nested dict containing accessid/accesskey
+                            for v in iot.values():
+                                if isinstance(v, dict) and (
+                                    any(k.lower() == 'accessid' for k in v.keys())
+                                    and any(k.lower() == 'accesskey' for k in v.keys())
+                                ):
+                                    iot_platform_keys = v
+                                    break
+                    # Final fallback: scan result dict for any nested dict with accessid/accesskey
+                    if not iot_platform_keys:
+                        for v in result.values():
+                            if isinstance(v, dict) and (
+                                any(k.lower() == 'accessid' for k in v.keys())
+                                and any(k.lower() == 'accesskey' for k in v.keys())
+                            ):
+                                iot_platform_keys = v
+                                break
+                except Exception:
+                    iot_platform_keys = {}
                 
+                # Normalize known nested key names to 'accessid'/'accesskey' to avoid case issues
+                def _normalize_iot_keys(keys: dict[str, Any]) -> dict[str, Any]:
+                    if not keys or not isinstance(keys, dict):
+                        return {}
+                    nk = {}
+                    for k, v in keys.items():
+                        kn = k.lower()
+                        if kn in ('accessid', 'access_id'):
+                            nk['accessid'] = v
+                        elif kn in ('accesskey', 'access_key'):
+                            nk['accesskey'] = v
+                        else:
+                            nk[kn] = v
+                    return nk
+
+                normalized_iot_keys = _normalize_iot_keys(iot_platform_keys)
+
                 self.session_data = {
                     "userToken": user_token,
                     "userID": user_id,
                     "caKey": ca_key,
                     "loginTime": int(time.time()),
                     "apiServer": self.BASE_URL,
-                    "iotPlatformKeys": iot_platform_keys
+                    "iotPlatformKeys": normalized_iot_keys
                 }
+                # Debug log presence of OpenAPI keys
+                try:
+                    if normalized_iot_keys:
+                        self._log(f"OpenAPI keys found (masked): accessid={normalized_iot_keys.get('accessid') and '***'}, accesskey={normalized_iot_keys.get('accesskey') and '***'}")
+                    else:
+                        self._log("No OpenAPI keys found in login response; remote configuration endpoints may be unavailable")
+                except Exception:
+                    pass
                 
                 self._save_session_cache(self.session_data)
                 return True
