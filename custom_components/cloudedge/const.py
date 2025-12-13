@@ -65,11 +65,10 @@ SWITCH_PARAMETERS = {
 }
 
 # Parameter names for sensors (mapped to parameter codes, not names)
+# These should be READ-ONLY values - editable values go to number.py
 SENSOR_PARAMETERS = {
     "battery_level": "154",        # BATTERY_PERCENT
     "wifi_strength": "1007",       # WIFI_STRENGTH
-    "motion_sensitivity": "151",   # MOTION_DET_SENSITIVITY
-    "speaker_volume": "152",       # SPEAK_VOLUME
     "device_temperature": "1012",  # DEVICE_TEMPERATURE
 }
 
