@@ -370,6 +370,10 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             _LOGGER.debug("Wake device call failed for %s: %s", self._attr_name, e)
             wake_result = None
 
+        # If wake_result is None or P2P is disabled in config, bail
+        if self.coordinator.client.disable_p2p:
+            _LOGGER.debug("P2P disabled in integration config - skipping P2P snapshot for %s", self._attr_name)
+            return None
         if not wake_result:
             _LOGGER.debug("No wake result for %s, cannot attempt cloud-mediated P2P", self._attr_name)
             return None

@@ -28,6 +28,7 @@ from .const import (
     CONF_REGION,
     CONF_BASE_URL,
     CONF_OPENAPI_BASE_URL,
+    CONF_DISABLE_P2P,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_REGION,
 )
@@ -190,6 +191,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
+                    disable_p2p=self.config_entry.data.get(CONF_DISABLE_P2P, True),
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for validation for user %s (region=%s, base_url=%s)",
@@ -283,6 +285,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
+                    disable_p2p=self.config_entry.data.get(CONF_DISABLE_P2P, True),
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for user %s (region=%s, base_url=%s)",

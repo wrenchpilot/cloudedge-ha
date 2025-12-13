@@ -86,6 +86,7 @@ class CloudEdgeClient:
         region: Optional[str] = None,
         base_url: Optional[str] = None,
         openapi_base_url: Optional[str] = None,
+        disable_p2p: bool = False,
         log_signature_debug: bool = False,
         use_epoch_timestamp: bool = False,
     ):
@@ -178,6 +179,9 @@ class CloudEdgeClient:
 
         if self.debug:
             self._log(f"Using BASE_URL={self.BASE_URL} OPENAPI_BASE_URL={self.OPENAPI_BASE_URL}")
+        # Per-account and device cached endpoints for snapshot retrieval
+        # Structure: {'snapshotEndpointCache': {userID: {serial: endpoint_info}}}
+        self.disable_p2p = bool(disable_p2p)
         
     def _detect_local_network(self) -> Optional[str]:
         """Detect the local network subnet."""
@@ -721,6 +725,9 @@ class CloudEdgeClient:
                     "apiServer": self.BASE_URL,
                     "iotPlatformKeys": normalized_iot_keys
                 }
+                # Ensure snapshot cache structure exists
+                if 'snapshotEndpointCache' not in self.session_data:
+                    self.session_data['snapshotEndpointCache'] = {}
                 # Debug log presence of OpenAPI keys
                 try:
                     if normalized_iot_keys:
@@ -1372,6 +1379,37 @@ class CloudEdgeClient:
             wake_endpoints.insert(1, f"{openapi_domain}/v1/app/device/wake")
         
         last_error = None
+        # Try a cached endpoint first (per-account/device) to avoid probing
+        cached = self._get_cached_snapshot_endpoint(device_serial)
+        if cached:
+            try:
+                self._log(f"Trying cached snapshot endpoint for device {device_serial}: {cached}")
+                if cached.get('type') == 'openapi':
+                    # cached contains path and params
+                    url = f"{cached.get('base')}{cached.get('path')}"
+                    resp = self._session.get(url, headers=headers, params=cached.get('params', {}), timeout=DEFAULT_TIMEOUT)
+                else:
+                    # v1 endpoints - send as full URL
+                    url = cached.get('url')
+                    req_headers = headers.copy()
+                    req_headers.update(self._generate_xca_headers(params_str, self.session_data.get('userToken')))
+                    resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT)
+
+                if resp and resp.status_code == 200 and 'image' in (resp.headers.get('Content-Type', '')):
+                    self._log(f"Cached snapshot endpoint succeeded for device {device_serial}: {cached}")
+                    return resp.content
+            except Exception as e:
+                # Remove cache if cached endpoint fails
+                self._log(f"Cached snapshot endpoint failed for device {device_serial}: {e}")
+                try:
+                    # Remove cached entry
+                    cache = self.session_data.get('snapshotEndpointCache', {})
+                    user_cache = cache.get(str(self.session_data.get('userID', '')), {})
+                    if device_serial in user_cache:
+                        del user_cache[device_serial]
+                        self._save_session_cache(self.session_data)
+                except Exception:
+                    pass
         for endpoint in wake_endpoints:
             try:
                 self._log(f"Trying wake endpoint: {endpoint}")
@@ -1669,6 +1707,26 @@ class CloudEdgeClient:
                 return device
                 
         return None
+
+    def _get_cached_snapshot_endpoint(self, device_serial: str) -> Optional[Dict[str, Any]]:
+        """Get cached snapshot endpoint info for a device serial for the current user."""
+        if not self.session_data:
+            return None
+        user_id = str(self.session_data.get('userID', ''))
+        cache = self.session_data.setdefault('snapshotEndpointCache', {})
+        user_cache = cache.get(user_id, {}) if isinstance(cache, dict) else {}
+        return user_cache.get(device_serial)
+
+    def _set_cached_snapshot_endpoint(self, device_serial: str, endpoint_info: Dict[str, Any]) -> None:
+        """Set a cached snapshot endpoint for a device serial, persistent in session_data."""
+        if not self.session_data:
+            return
+        user_id = str(self.session_data.get('userID', ''))
+        cache = self.session_data.setdefault('snapshotEndpointCache', {})
+        user_cache = cache.setdefault(user_id, {})
+        user_cache[device_serial] = endpoint_info
+        # Persist the updated cache to disk
+        self._save_session_cache(self.session_data)
 
     def _resolve_full_url(self, url: str) -> str:
         """
@@ -2300,6 +2358,10 @@ class CloudEdgeClient:
                 content_type = response.headers.get('Content-Type', '')
                 if response.status_code == 200 and content_type and 'image' in content_type:
                     self._log(f"Snapshot endpoint returned image: {endpoint} (Content-Type: {content_type})")
+                    try:
+                        self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "endpoint": endpoint})
+                    except Exception:
+                        pass
                     return response.content
 
                 # If JSON, try to extract image URL or base64 payload
@@ -2333,6 +2395,10 @@ class CloudEdgeClient:
                                     content = self.decrypt_alarm_image(content, device_serial, image_url)
                                 if content and content[:2] in (b'\xff\xd8', b'\x89PN'):
                                     self._log(f"Got image from {endpoint} -> {img_url}")
+                                    try:
+                                        self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "img_url": img_url, "endpoint": endpoint})
+                                    except Exception:
+                                        pass
                                     return content
                         except requests.exceptions.RequestException:
                             # Ignore connection errors to image URL, continue to next endpoint
@@ -2471,6 +2537,10 @@ class CloudEdgeClient:
                                 decrypted = self.decrypt_alarm_image(content, device_serial, url)
                                 if decrypted and (decrypted[:2] == b'\xff\xd8' or decrypted[:4] == b'\x89PNG'):
                                     self._log(f"OpenAPI file endpoint {url} returned decrypted image (via {path})")
+                                    try:
+                                        self._set_cached_snapshot_endpoint(device_serial, {"type": "openapi", "base": openapi_base, "path": path, "params": params})
+                                    except Exception:
+                                        pass
                                     return decrypted
                             except Exception:
                                 pass
@@ -2500,6 +2570,10 @@ class CloudEdgeClient:
                                             except Exception:
                                                 pass
                                         self._log(f"OpenAPI file endpoint {url} returned image via URL: {full_val} (via {path})")
+                                        try:
+                                            self._set_cached_snapshot_endpoint(device_serial, {"type": "openapi", "base": openapi_base, "path": path, "params": params, "image_url": full_val})
+                                        except Exception:
+                                            pass
                                         return content
                                 except requests.exceptions.RequestException:
                                     pass
