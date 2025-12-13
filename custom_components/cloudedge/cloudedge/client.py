@@ -2037,7 +2037,7 @@ class CloudEdgeClient:
         """
         if not image_data or not device_serial:
             return image_data
-            
+        
         # Check encryption version from URL or file suffix
         url_lower = url.lower() if url else ""
         
@@ -2111,54 +2111,159 @@ class CloudEdgeClient:
         Returns:
             Optional[bytes]: JPEG image data or None if not available
         """
-        try:
-            # Get latest events (returns empty list if no cloud subscription)
-            events = self.get_alarm_events(device_id, limit=1)
-            if not events:
-                # Don't log - this is expected for cameras without cloud subscription
-                return None
-                
-            latest = events[0]
-            image_url = latest.get('image_url')
-            if not image_url:
-                if self.debug:
-                    self._log("Latest alarm event has no image URL")
-                return None
-                
-            if self.debug:
-                self._log(f"Fetching alarm image from: {image_url[:80]}...")
-            
-            # Download image
-            response = self._make_request(
-                'GET',
-                image_url,
-                timeout=DEFAULT_TIMEOUT
-            )
-            
-            if response.status_code != 200:
-                if self.debug:
-                    self._log(f"Failed to download alarm image: HTTP {response.status_code}")
-                return None
-                
-            image_data = response.content
-            
-            # Decrypt if necessary
-            if latest.get('is_encrypted'):
-                if self.debug:
-                    self._log("Decrypting encrypted image...")
-                image_data = self.decrypt_alarm_image(image_data, device_serial, image_url)
-                
-            # Validate JPEG header
-            if image_data[:2] != b'\xff\xd8':
-                if self.debug:
-                    self._log("Warning: Decrypted image does not have valid JPEG header")
-                # Try without decryption as fallback
-                if response.content[:2] == b'\xff\xd8':
-                    return response.content
-                    
-            return image_data
-            
-        except Exception as e:
-            if self.debug:
-                self._log(f"Failed to get latest alarm image: {e}")
+        # Get latest events (returns empty list if no cloud subscription)
+        events = self.get_alarm_events(device_id, limit=1)
+        if not events:
+            # Don't log - this is expected for cameras without cloud subscription
             return None
+
+        latest = events[0]
+        image_url = latest.get('image_url')
+        if not image_url:
+            if self.debug:
+                self._log("Latest alarm event has no image URL")
+            return None
+
+        if self.debug:
+            self._log(f"Fetching alarm image from: {image_url[:80]}...")
+
+        # Download image
+        response = self._make_request(
+            'GET',
+            image_url,
+            timeout=DEFAULT_TIMEOUT
+        )
+
+        if response.status_code != 200:
+            if self.debug:
+                self._log(f"Failed to download alarm image: HTTP {response.status_code}")
+            return None
+
+        image_data = response.content
+
+        # Decrypt if necessary
+        if latest.get('is_encrypted'):
+            if self.debug:
+                self._log("Decrypting encrypted image...")
+            image_data = self.decrypt_alarm_image(image_data, device_serial, image_url)
+
+        # Validate JPEG header
+        if image_data[:2] != b'\xff\xd8':
+            if self.debug:
+                self._log("Warning: Decrypted image does not have valid JPEG header")
+            # Try without decryption as fallback
+            if response.content[:2] == b'\xff\xd8':
+                return response.content
+
+        return image_data
+
+    def get_device_snapshot(self, device_id: int, device_serial: str) -> Optional[bytes]:
+
+        """
+        Try to fetch a snapshot image for a device using Cloud API endpoints.
+
+        This method probes several possible server endpoints and attempts to
+        return raw JPEG/PNG bytes. Returns None if no snapshot is available
+        or if the account/device lacks permission (no cloud subscription).
+        """
+        if not self.session_data:
+            raise AuthenticationError("Not authenticated - call authenticate() first")
+
+        # Build base params similar to other APIs
+        timestamp = self._generate_url_timestamp()
+        nonce = int(time.time())
+        base_params = {
+            'appVer': '5.5.1',
+            'appVerCode': '551',
+            'deviceID': str(device_id),
+            'lngType': 'en',
+            'phoneType': 'a',
+            'signatureMethod': 'HMAC-SHA1',
+            'signatureNonce': str(nonce),
+            'signatureVersion': '1.0',
+            'sourceApp': '8',
+            'timestamp': timestamp,
+            'userID': str(self.session_data['userID']),
+            'userToken': self.session_data['userToken']
+        }
+
+        params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
+        xca_headers = self._generate_xca_headers(params_str, self.session_data.get('userToken'))
+        signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
+        signature_encoded = quote(signature)
+
+        snapshot_endpoints = [
+            f"{self.BASE_URL}/v1/app/device/snapshot",
+            f"{self.BASE_URL}/v1/app/device/preview",
+            f"{self.BASE_URL}/app/device/snapshot.action",
+            f"{self.BASE_URL}/ppstrongs/getSnapshot.action",
+            f"{self.BASE_URL}/ppstrongs/getDeviceSnapshot.action",
+        ]
+
+        iot_keys = self.session_data.get('iotPlatformKeys', {})
+        if iot_keys.get('openapidomain'):
+            openapi_domain = iot_keys['openapidomain']
+            if not openapi_domain.startswith('http'):
+                openapi_domain = f"https://{openapi_domain}"
+            snapshot_endpoints.insert(1, f"{openapi_domain}/v1/app/device/snapshot")
+
+        headers = {
+            "Accept-Language": "en-US,en;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        headers.update(xca_headers)
+
+        last_error = None
+        for endpoint in snapshot_endpoints:
+            try:
+                self._log(f"Trying snapshot endpoint: {endpoint}")
+                url = f"{endpoint}?{params_str}&signature={signature_encoded}"
+                response = self._make_request('GET', url, headers=headers, timeout=DEFAULT_TIMEOUT)
+
+                # Some endpoints return an image directly
+                content_type = response.headers.get('Content-Type', '')
+                if response.status_code == 200 and content_type and 'image' in content_type:
+                    return response.content
+
+                # If JSON, try to extract image URL or base64 payload
+                try:
+                    data = response.json()
+                except Exception:
+                    data = None
+
+                if isinstance(data, dict):
+                    # Extract image URL or a numeric ID
+                    result = data.get('result') or data
+                    image_url = None
+                    if isinstance(result, dict):
+                        for key in ['imgUrl', 'imageUrl', 'snapshotUrl', 'deviceImg', 'picUrl', 'picture']:
+                            val = result.get(key)
+                            if val and isinstance(val, str) and (val.startswith('http') or val.startswith('/')):
+                                image_url = val
+                                break
+
+                    if image_url:
+                        # Download image
+                        try:
+                            img_resp = self._make_request('GET', image_url, timeout=DEFAULT_TIMEOUT)
+                            if img_resp.status_code == 200:
+                                content = img_resp.content
+                                # Decrypt if necessary
+                                if self._is_encrypted_image(image_url):
+                                    content = self.decrypt_alarm_image(content, device_serial, image_url)
+                                if content and content[:2] in (b'\xff\xd8', b'\x89PN'):
+                                    return content
+                        except Exception:
+                            pass
+
+                # Not successful - keep trying next endpoint
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if self.debug:
+                    self._log(f"Snapshot endpoint {endpoint} failed: {e}")
+                continue
+
+        if last_error and self.debug:
+            self._log(f"Snapshot requests failed on all endpoints: {last_error}")
+        return None

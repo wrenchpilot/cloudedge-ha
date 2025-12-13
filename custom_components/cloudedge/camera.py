@@ -256,6 +256,24 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                 if result:
                     return result
 
+        # === PRIORITY 3.5: Cloud snapshot API endpoint ===
+        # Some regions/clouds provide a direct snapshot/preview API (non-P2P).
+        # Try it here before attempting ONVIF or P2P.
+        if device_id:
+            try:
+                _LOGGER.debug("Attempting cloud snapshot API for %s (ID: %s)", self._attr_name, device_id)
+                cloud_snapshot = await self.hass.async_add_executor_job(
+                    self.coordinator.client.get_device_snapshot,
+                    device_id,
+                    self._serial_number,
+                )
+                if cloud_snapshot and len(cloud_snapshot) > 100:
+                    if cloud_snapshot[:2] == b'\xff\xd8' or cloud_snapshot[:4] == b'\x89PNG':
+                        _LOGGER.debug("Got valid cloud snapshot (%d bytes) for %s", len(cloud_snapshot), self._attr_name)
+                        return cloud_snapshot
+            except Exception as e:
+                _LOGGER.debug("Cloud snapshot API failed for %s: %s", self._attr_name, e)
+
         # === PRIORITY 4: Check configuration for ONVIF/RTSP URLs ===
         # Some devices may expose ONVIF or RTSP URLs that could have snapshot endpoints
         config = device_data.get("configuration") or {}
@@ -292,18 +310,18 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         aws_cloud_compat = device_data.get('aws_cloud_compat') or device_data.get('awsCloudCompat', 0)
         is_cloud_only = (iot_type == 3 and aws_cloud_compat == 1)
         
-        if is_cloud_only:
-            if cloud_support == 0:
-                _LOGGER.debug(
-                    "No snapshot available for %s - cloud-only camera (iotType=%s) without cloud subscription",
-                    self._attr_name, iot_type
-                )
-            else:
-                _LOGGER.debug(
-                    "Camera %s uses cloud-mediated P2P (iotType=%s) - snapshots require cloud subscription",
-                    self._attr_name, iot_type
-                )
+        if is_cloud_only and cloud_support == 0:
+            _LOGGER.debug(
+                "No snapshot available for %s - cloud-only camera (iotType=%s) without cloud subscription",
+                self._attr_name, iot_type
+            )
             return None
+        elif is_cloud_only and cloud_support == 1:
+            _LOGGER.debug(
+                "Camera %s uses cloud-mediated P2P (iotType=%s) - attempting cloud snapshot APIs rather than P2P",
+                self._attr_name, iot_type
+            )
+
         
         # For non-cloud-only cameras, try P2P if we have an IP
         if device_id and device_ip:
