@@ -25,16 +25,11 @@ import random
 import string
 from urllib.parse import quote
 
-# Try to import from HA environment first
-try:
-    sys.path.insert(0, "/config/custom_components/cloudedge")
-    from cloudedge import CloudEdgeClient
-except ImportError:
-    # For standalone testing, import directly using requests
-    import requests
-    
-    # Minimal standalone CloudEdge client for testing wake_device
-    class CloudEdgeClient:
+# Always use standalone client for this test tool (avoids import conflicts)
+import requests
+
+# Minimal standalone CloudEdge client for testing wake_device
+class CloudEdgeClient:
         """Minimal CloudEdge client for standalone testing."""
         
         # Use the correct US region endpoint
@@ -67,38 +62,103 @@ except ImportError:
             return base64.b64encode(signature).decode('utf-8')
             
         def authenticate(self, email, password):
-            """Simplified authentication for testing."""
+            """Authenticate using the same method as the main CloudEdge client."""
             self._log(f"Authenticating as {email}...")
             
-            # Hash password
-            pwd_hash = hashlib.md5(password.encode()).hexdigest()
+            # Encrypt credentials using 3DES (matching main client)
+            timestamp = int(time.time() * 1000)
             
-            timestamp = self._generate_url_timestamp()
-            nonce = int(time.time())
+            try:
+                from cryptography.hazmat.primitives.ciphers import Cipher, modes
+                from cryptography.hazmat.primitives import padding
+                from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+                
+                key = "123456781234567812345678".encode('utf-8')
+                iv = "01234567".encode('utf-8')
+                
+                algorithm = TripleDES(key)
+                cipher = Cipher(algorithm, modes.CBC(iv))
+                encryptor = cipher.encryptor()
+                
+                padder = padding.PKCS7(64).padder()
+                padded_data = padder.update(password.encode('utf-8')) + padder.finalize()
+                
+                encrypted = encryptor.update(padded_data) + encryptor.finalize()
+                encrypted_password = base64.b64encode(encrypted).decode('utf-8')
+            except Exception as e:
+                raise Exception(f"Password encryption failed: {e}")
             
-            params_str = (
-                f"account={quote(email)}&appVer=5.5.1&appVerCode=551&lngType=en&"
-                f"password={pwd_hash}&phoneType=a&signatureMethod=HMAC-SHA1&"
-                f"signatureNonce={nonce}&signatureVersion=1.0&sourceApp=8&timestamp={timestamp}"
+            # Generate headers matching main client
+            ca_timestamp = str(timestamp)
+            ca_nonce = str(int(time.time() * 1000000) % 100000000)
+            ca_key = "bc29be30292a4309877807e101afbd51"
+            
+            # Create signature
+            ca_sign_data = (
+                f"phoneType=a&sourceApp=8&appVer=5.5.1&iotType=4&equipmentNo=&"
+                f"appVerCode=551&localTime={timestamp}&password={encrypted_password}&"
+                f"t={timestamp}&lngType=en&countryCode=US&"
+                f"userAccount={email}&phoneCode=+1"
             )
+            ca_signature = base64.b64encode(
+                hmac.new(ca_key.encode(), ca_sign_data.encode(), hashlib.sha1).digest()
+            ).decode()
             
-            signature = self._generate_api_signature(params_str)
-            url = f"{self.BASE_URL}/v2/app/account/user_login_pwd?{params_str}&signature={quote(signature)}"
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
-                "Accept": "*/*",
+            login_data = {
+                "phoneType": "a",
+                "sourceApp": "8",
+                "appVer": "5.5.1",
+                "iotType": "4",
+                "equipmentNo": "",
+                "appVerCode": "551",
+                "localTime": timestamp,
+                "password": encrypted_password,
+                "t": timestamp,
+                "lngType": "en",
+                "countryCode": "US",
+                "userAccount": email,
+                "phoneCode": "+1"
             }
             
-            response = self.session.get(url, headers=headers, timeout=self.DEFAULT_TIMEOUT)
+            headers = {
+                "Accept-Language": "en-US,en;q=0.8",
+                "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+                "X-Ca-Timestamp": ca_timestamp,
+                "X-Ca-Sign": ca_signature,
+                "X-Ca-Key": ca_key,
+                "X-Ca-Nonce": ca_nonce,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept-Encoding": "gzip, deflate, br"
+            }
+            
+            url = f"{self.BASE_URL}/meari/app/login"
+            self._log(f"Request URL: {url}")
+            
+            response = self.session.post(url, headers=headers, data=login_data, timeout=self.DEFAULT_TIMEOUT)
+            self._log(f"Response status: {response.status_code}")
+            if response.status_code != 200:
+                self._log(f"Response text: {response.text[:500]}")
+            
             data = response.json()
             
             if data.get("resultCode") == "1001":
-                self.session_data = data.get("result", {})
+                result = data.get("result", {})
+                user_token = result.get("userToken")
+                user_id = result.get("userID")
+                
+                if not user_token or not user_id:
+                    raise Exception("Missing user token or ID in response")
+                
+                self.session_data = {
+                    "userToken": user_token,
+                    "userID": user_id,
+                }
                 self._log("Authentication successful!")
                 return self.session_data
             else:
-                raise Exception(f"Auth failed: {data.get('resultMsg', 'Unknown error')}")
+                error_msg = data.get('resultMsg', 'Unknown error')
+                error_code = data.get('resultCode', 'unknown')
+                raise Exception(f"Auth failed: {error_msg} (Code: {error_code})")
                 
         def get_devices(self):
             """Get device list."""

@@ -1379,9 +1379,6 @@ class CloudEdgeClient:
             f"{self.BASE_URL}/ppstrongs/removeWake.action",
             f"{self.BASE_URL}/v1/app/device/wake",
             f"{self.BASE_URL}/app/device/wake.action",
-            # Try meari.com.cn endpoints (older servers)
-            "https://api-us.meari.com.cn/ppstrongs/removeWake.action",
-            "https://apis-eu-frankfurt.meari.com.cn/ppstrongs/removeWake.action",
         ]
         
         # Also try OpenAPI endpoint if available
