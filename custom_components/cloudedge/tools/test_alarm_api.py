@@ -131,18 +131,8 @@ def main():
     if force_fresh:
         print("Mode: FRESH LOGIN (ignoring cache)")
     
-    # Create client with debug enabled
-    client = CloudEdgeClient(
-        username=username,
-        password=password,
-        country_code=country_code,
-        phone_code=phone_code,
-        debug=True
-    )
-    
-    # Clear cache if requested
+    # Clear cache BEFORE creating client if requested
     if force_fresh:
-        import os
         import glob
         cache_files = glob.glob(os.path.expanduser("~/.cloudedge_session_cache*"))
         for f in cache_files:
@@ -151,8 +141,15 @@ def main():
                 print(f"Removed cache file: {f}")
             except Exception as e:
                 print(f"Could not remove {f}: {e}")
-        # Also clear internal session
-        client.session_data = None
+    
+    # Create client with debug enabled
+    client = CloudEdgeClient(
+        username=username,
+        password=password,
+        country_code=country_code,
+        phone_code=phone_code,
+        debug=True
+    )
     
     print("\nAuthenticating...")
     try:

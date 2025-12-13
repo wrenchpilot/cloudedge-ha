@@ -1744,17 +1744,80 @@ class CloudEdgeClient:
         
         # Try each potential endpoint
         last_error = None
+        
+        # FIRST: Try the ppstrongs POST format (same as get_devices works)
+        ppstrongs_endpoints = [
+            '/ppstrongs/getAlertMsg.action',
+            '/ppstrongs/getAlarmMsg.action',
+            '/ppstrongs/getMsgAlert.action',
+            '/ppstrongs/getDeviceAlert.action',
+            '/ppstrongs/getDeviceAlarm.action',
+        ]
+        
+        for endpoint in ppstrongs_endpoints:
+            try:
+                # Build POST body like get_devices does
+                post_body = self._generate_device_body({
+                    'deviceID': str(device_id),
+                    'day': day,
+                    'index': index,
+                    'direction': str(direction),
+                    'eventType': str(event_type),
+                })
+                
+                post_headers = {
+                    "Accept": "*/*",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+                    "Accept-Language": "en-US,en;q=1"
+                }
+                
+                response = self._make_request(
+                    'POST',
+                    f"{self.BASE_URL}{endpoint}",
+                    headers=post_headers,
+                    data=post_body,
+                    timeout=DEFAULT_TIMEOUT
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if self.debug:
+                        self._log(f"ppstrongs alarm response from {endpoint}: {json.dumps(response_data)[:500]}")
+                    
+                    if response_data.get('resultCode') in (1001, '1001', 0, '0', 'success'):
+                        events = self._parse_alarm_events(response_data.get('result', {}))
+                        if events:
+                            self._log(f"Found {len(events)} alarm events from {endpoint}")
+                            return events[:limit]
+                        self._log(f"Endpoint {endpoint} returned success but no events")
+                        return []
+                    elif response_data.get('resultCode') not in (1006, '1006', 1023, '1023'):
+                        self._log(f"Endpoint {endpoint} returned error: {response_data.get('resultMsg', response_data.get('resultCode'))}")
+                        
+            except requests.exceptions.RequestException as e:
+                if self.debug:
+                    self._log(f"Endpoint {endpoint} request failed: {e}")
+                continue
+            except json.JSONDecodeError:
+                if self.debug:
+                    self._log(f"Endpoint {endpoint} returned invalid JSON")
+                continue
+        
+        # SECOND: Try GET endpoints with signature (no retries on 404 to speed things up)
         for endpoint in potential_endpoints:
             url = f"{self.BASE_URL}{endpoint}?{params_str}&signature={signature_encoded}"
             
             try:
-                response = self._make_request(
-                    'GET',
-                    url,
-                    headers=headers,
-                    timeout=DEFAULT_TIMEOUT
-                )
+                # Use direct session call to avoid retry decorator on 404s
+                response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
                 
+                if response.status_code == 404:
+                    if self.debug:
+                        self._log(f"Endpoint {endpoint} returned 404 - skipping")
+                    continue
+                    
                 if response.status_code == 200:
                     response_data = response.json()
                     if self.debug:
