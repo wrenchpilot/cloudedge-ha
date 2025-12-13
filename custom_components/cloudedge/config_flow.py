@@ -22,6 +22,7 @@ from .const import (
     CONF_BASE_URL,
     CONF_OPENAPI_BASE_URL,
     CONF_P2P_MODE,
+    CONF_PROBE_ALLOW_INSECURE,
     CONF_DEBUG,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_COUNTRY_CODE,
@@ -34,6 +35,7 @@ from .const import (
     P2P_MODE_DISABLED,
     P2P_MODE_FORCE_LOCAL,
     DEFAULT_DEBUG,
+    DEFAULT_PROBE_ALLOW_INSECURE,
 )
 
 _LOGGER = logging.getLogger(__name__)
