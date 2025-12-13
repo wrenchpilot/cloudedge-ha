@@ -1616,3 +1616,404 @@ class CloudEdgeClient:
             'local_network': self._detect_local_network(),
             'network_detected': self._network_detected
         }
+
+    def get_alarm_events(
+        self, 
+        device_id: int, 
+        day: Optional[str] = None,
+        index: str = "1",
+        direction: int = 1,
+        event_type: int = 0,
+        ai_types: Optional[List[int]] = None,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Get alarm/motion events for a device with associated images.
+        
+        This method attempts to fetch alarm messages from the CloudEdge API.
+        These contain motion/event thumbnails that can be used as camera snapshots.
+        
+        Args:
+            device_id (int): Device ID (numeric ID, not serial number)
+            day (str): Date in format 'YYYYMMDD'. Defaults to today.
+            index (str): Pagination index. "1" for first page.
+            direction (int): 0 = older, 1 = newer
+            event_type (int): Event type filter (0=all, 1=motion, 2=pir, 3=bell, 11=human, 17=car, 18=pet)
+            ai_types (List[int]): AI detection types (0=person, 1=pet, 2=car, etc.)
+            limit (int): Maximum number of events to return
+            
+        Returns:
+            List[Dict]: List of alarm events with image URLs
+            
+        Raises:
+            AuthenticationError: If not authenticated
+            NetworkError: If network request fails
+        """
+        if not self.session_data:
+            raise AuthenticationError("Not authenticated - call authenticate() first")
+            
+        # Default to today's date
+        if not day:
+            day = datetime.datetime.now().strftime('%Y%m%d')
+            
+        # Default AI types for general detection
+        if ai_types is None:
+            ai_types = [0, 1, 2, 3, 4, 5, 6, 7]  # All AI types
+            
+        self._log(f"Getting alarm events for device {device_id}, date {day}...")
+        
+        timestamp = self._generate_url_timestamp()
+        nonce = int(time.time())
+        
+        # Format ai_types as comma-separated string
+        ai_types_str = ",".join(str(t) for t in ai_types)
+        
+        # Build the base parameters - try different endpoint variations
+        base_params = {
+            'appVer': '5.5.1',
+            'appVerCode': '551',
+            'deviceID': str(device_id),
+            'day': day,
+            'index': index,
+            'direction': str(direction),
+            'eventType': str(event_type),
+            'aiType': ai_types_str,
+            'lngType': 'en',
+            'phoneType': 'a',
+            'signatureMethod': 'HMAC-SHA1',
+            'signatureNonce': str(nonce),
+            'signatureVersion': '1.0',
+            'sourceApp': '8',
+            'timestamp': timestamp,
+            'userID': str(self.session_data['userID']),
+            'userToken': self.session_data['userToken']
+        }
+        
+        # List of potential endpoints to try (based on SDK method analysis)
+        # SDK methods are getAlertMsg and getAlertMsgWithVideo
+        potential_endpoints = [
+            '/v1/app/msg/alarm/list',          # Most likely based on SDK patterns
+            '/v1/app/device/alarm/list',       # Alternative pattern
+            '/v1/app/msg/alert/list',          # getAlertMsg -> alert
+            '/v1/app/device/alert/list',       # getAlertMsg -> alert (device prefix)
+            '/v1/app/alert/msg/list',          # getAlertMsg -> msg/list
+            '/v1/app/alertMsg/list',           # camelCase matching SDK
+            '/v1/app/msg/device/alarm/list',   # Combined pattern
+            '/v1/app/alarm/device/list',       # Alternative
+            '/v1/app/device/msg/list',         # Message list per device
+            '/v1/app/user/alarm/list',         # User alarm list
+            '/v1/app/home/alarm/list',         # Home alarm list (like home/list for devices)
+        ]
+        
+        # Generate X-Ca headers
+        params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
+        xca_headers = self._generate_xca_headers(params_str, self.session_data['userToken'])
+        
+        headers = {
+            "Accept-Language": "en-US,en;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+            "Accept-Encoding": "gzip, deflate, br"
+        }
+        headers.update(xca_headers)
+        
+        # Generate signature
+        signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
+        signature_encoded = quote(signature)
+        
+        # Try each potential endpoint
+        last_error = None
+        for endpoint in potential_endpoints:
+            url = f"{self.BASE_URL}{endpoint}?{params_str}&signature={signature_encoded}"
+            
+            try:
+                response = self._make_request(
+                    'GET',
+                    url,
+                    headers=headers,
+                    timeout=DEFAULT_TIMEOUT
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if self.debug:
+                        self._log(f"Alarm API response from {endpoint}: {json.dumps(response_data)[:500]}")
+                    
+                    # Check for success
+                    if response_data.get('resultCode') in (1001, '1001', 0, '0', 'success'):
+                        events = self._parse_alarm_events(response_data.get('result', {}))
+                        if events:
+                            self._log(f"Found {len(events)} alarm events from {endpoint}")
+                            return events[:limit]
+                        # Empty but successful - endpoint exists
+                        self._log(f"Endpoint {endpoint} returned success but no events")
+                        return []
+                    elif response_data.get('resultCode') not in (1006, '1006'):  # 1006 = invalid endpoint
+                        # Endpoint exists but returned an error
+                        self._log(f"Endpoint {endpoint} returned error: {response_data.get('resultMsg')}")
+                        
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if self.debug:
+                    self._log(f"Endpoint {endpoint} request failed: {e}")
+                continue
+            except json.JSONDecodeError:
+                if self.debug:
+                    self._log(f"Endpoint {endpoint} returned invalid JSON")
+                continue
+                
+        # All endpoints failed - try OpenAPI approach
+        self._log("Standard endpoints failed, trying OpenAPI alarm endpoint...")
+        return self._get_alarm_events_openapi(device_id, day, limit)
+        
+    def _get_alarm_events_openapi(self, device_id: int, day: str, limit: int) -> List[Dict]:
+        """
+        Fallback: Try to get alarm events via OpenAPI endpoint.
+        
+        Args:
+            device_id (int): Device ID
+            day (str): Date in YYYYMMDD format
+            limit (int): Maximum events to return
+            
+        Returns:
+            List[Dict]: Alarm events or empty list
+        """
+        iot_keys = self.session_data.get('iotPlatformKeys', {})
+        if not iot_keys or 'accessid' not in iot_keys:
+            self._log("No OpenAPI credentials available for alarm events")
+            return []
+            
+        access_id = iot_keys['accessid']
+        access_key = iot_keys['accesskey']
+        openapi_base = iot_keys.get('openapidomain') or self.OPENAPI_BASE_URL
+        
+        # Try OpenAPI alarm endpoint patterns
+        openapi_endpoints = [
+            '/openapi/device/alarm/list',
+            '/openapi/alarm/list',
+            '/openapi/msg/alarm/list',
+            '/openapi/alert/list',
+            '/openapi/device/alert/list',
+            '/openapi/device/event/list',
+            '/openapi/event/list',
+        ]
+        
+        for endpoint in openapi_endpoints:
+            try:
+                signature, timeout = self._get_signature_for_openapi(endpoint, 'get', access_key)
+                
+                params = {
+                    'accessid': access_id,
+                    'expires': timeout,
+                    'signature': signature,
+                    'action': 'get',
+                    'deviceid': str(device_id),
+                    'day': day,
+                }
+                
+                headers = {
+                    "Accept": "*/*",
+                    "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+                    "X-Ca-Key": CA_KEY
+                }
+                
+                response = self._make_request(
+                    'GET',
+                    f"{openapi_base}{endpoint}",
+                    headers=headers,
+                    params=params,
+                    timeout=DEFAULT_TIMEOUT
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if self.debug:
+                        self._log(f"OpenAPI alarm response from {endpoint}: {json.dumps(response_data)[:500]}")
+                    
+                    events = self._parse_alarm_events(response_data.get('result', {}))
+                    if events:
+                        return events[:limit]
+                        
+            except Exception as e:
+                if self.debug:
+                    self._log(f"OpenAPI endpoint {endpoint} failed: {e}")
+                continue
+                
+        self._log("All alarm API endpoints failed - alarm images not available")
+        return []
+        
+    def _parse_alarm_events(self, result: Union[Dict, List]) -> List[Dict]:
+        """
+        Parse alarm events from API response.
+        
+        Args:
+            result: API result data (dict or list)
+            
+        Returns:
+            List[Dict]: Parsed alarm events
+        """
+        events = []
+        
+        # Handle different response formats
+        if isinstance(result, list):
+            raw_events = result
+        elif isinstance(result, dict):
+            # Try common keys for event lists
+            raw_events = (
+                result.get('msgs', []) or
+                result.get('alarmList', []) or
+                result.get('events', []) or
+                result.get('list', []) or
+                result.get('data', [])
+            )
+            if not raw_events and 'deviceAlarmMessages' in result:
+                raw_events = result['deviceAlarmMessages']
+        else:
+            return []
+            
+        for event in raw_events:
+            if not isinstance(event, dict):
+                continue
+                
+            # Extract image URL from various possible keys
+            image_url = None
+            for key in ['imageUrl', 'imgUrl', 'tumbnailPic', 'thumbUrl', 'picUrl', 'alarmImgUrl']:
+                if event.get(key) and isinstance(event.get(key), str):
+                    image_url = event.get(key)
+                    break
+                    
+            # Extract event time
+            event_time = event.get('eventTime') or event.get('time') or event.get('createTime')
+            
+            parsed_event = {
+                'event_id': event.get('msgID') or event.get('id') or event.get('eventId'),
+                'device_id': event.get('deviceID') or event.get('deviceId'),
+                'event_type': event.get('eventType') or event.get('type'),
+                'event_time': event_time,
+                'image_url': image_url,
+                'video_url': event.get('videoUrl'),
+                'is_encrypted': self._is_encrypted_image(image_url) if image_url else False,
+                'raw': event  # Keep raw data for debugging
+            }
+            
+            if image_url:  # Only include events with images
+                events.append(parsed_event)
+                
+        return events
+        
+    def _is_encrypted_image(self, url: str) -> bool:
+        """Check if image URL points to an encrypted image (jepx1/jepx2/jepx3)."""
+        if not url:
+            return False
+        url_lower = url.lower()
+        return any(ext in url_lower for ext in ['.jepx1', '.jepx2', '.jepx3', 'jepx1', 'jepx2', 'jepx3'])
+        
+    def decrypt_alarm_image(self, image_data: bytes, device_serial: str, url: str = "") -> bytes:
+        """
+        Decrypt an encrypted alarm image (jepx1/jepx2/jepx3 format).
+        
+        The Meari SDK uses XOR-based decryption with the device serial number.
+        This is a reverse-engineered implementation based on SDK analysis.
+        
+        Args:
+            image_data (bytes): Encrypted image data
+            device_serial (str): Device serial number (used as decryption key)
+            url (str): Original URL (used to determine encryption version)
+            
+        Returns:
+            bytes: Decrypted JPEG image data
+        """
+        if not image_data or not device_serial:
+            return image_data
+            
+        # Check encryption version from URL
+        url_lower = url.lower() if url else ""
+        
+        try:
+            # Convert serial to bytes for XOR key
+            key = device_serial.encode('utf-8')
+            key_len = len(key)
+            
+            if '.jepx1' in url_lower or 'jepx1' in url_lower:
+                # JEPX1: Simple XOR with serial
+                decrypted = bytearray(len(image_data))
+                for i, byte in enumerate(image_data):
+                    decrypted[i] = byte ^ key[i % key_len]
+                return bytes(decrypted)
+                
+            elif '.jepx2' in url_lower or 'jepx2' in url_lower or '.jepx3' in url_lower or 'jepx3' in url_lower:
+                # JEPX2/JEPX3: More complex encryption - try XOR + offset
+                # Based on SDK decompilation hints
+                decrypted = bytearray(len(image_data))
+                for i, byte in enumerate(image_data):
+                    # XOR with key byte + position offset
+                    key_byte = key[i % key_len]
+                    decrypted[i] = (byte ^ key_byte ^ (i & 0xFF)) & 0xFF
+                return bytes(decrypted)
+                
+            else:
+                # Not encrypted or unknown format
+                return image_data
+                
+        except Exception as e:
+            self._log(f"Image decryption failed: {e}")
+            return image_data
+            
+    def get_latest_alarm_image(self, device_id: int, device_serial: str) -> Optional[bytes]:
+        """
+        Get the latest alarm event image for a device.
+        
+        This is a convenience method that fetches the most recent alarm event
+        and downloads/decrypts its associated image.
+        
+        Args:
+            device_id (int): Device ID (numeric)
+            device_serial (str): Device serial number (for decryption)
+            
+        Returns:
+            Optional[bytes]: JPEG image data or None if not available
+        """
+        try:
+            # Get latest events
+            events = self.get_alarm_events(device_id, limit=1)
+            if not events:
+                self._log("No alarm events found for image")
+                return None
+                
+            latest = events[0]
+            image_url = latest.get('image_url')
+            if not image_url:
+                self._log("Latest alarm event has no image URL")
+                return None
+                
+            self._log(f"Fetching alarm image from: {image_url}")
+            
+            # Download image
+            response = self._make_request(
+                'GET',
+                image_url,
+                timeout=DEFAULT_TIMEOUT
+            )
+            
+            if response.status_code != 200:
+                self._log(f"Failed to download alarm image: HTTP {response.status_code}")
+                return None
+                
+            image_data = response.content
+            
+            # Decrypt if necessary
+            if latest.get('is_encrypted'):
+                self._log(f"Decrypting encrypted image...")
+                image_data = self.decrypt_alarm_image(image_data, device_serial, image_url)
+                
+            # Validate JPEG header
+            if image_data[:2] != b'\xff\xd8':
+                self._log("Warning: Decrypted image does not have valid JPEG header")
+                # Try without decryption as fallback
+                if response.content[:2] == b'\xff\xd8':
+                    return response.content
+                    
+            return image_data
+            
+        except Exception as e:
+            self._log(f"Failed to get latest alarm image: {e}")
+            return None

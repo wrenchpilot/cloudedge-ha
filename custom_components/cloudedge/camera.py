@@ -174,7 +174,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         """Return bytes of camera image.
         
         CloudEdge/Meari cameras use TUTK P2P protocol and do NOT have HTTP snapshot endpoints.
-        We prioritize cloud-stored thumbnails from the API, which are the only reliable source.
+        We prioritize alarm event thumbnails from the cloud API, which are the most reliable source.
         """
         _LOGGER.debug("Camera image requested for %s", self._attr_name)
 
@@ -216,8 +216,28 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                 _LOGGER.debug("Error fetching %s: %s", url, e)
                 return None
 
-        # === PRIORITY 1: Cloud-stored thumbnail URL from device data ===
-        # This is the MOST RELIABLE source - stored in Meari cloud after motion events
+        # === PRIORITY 1: Latest alarm event image from cloud API ===
+        # This is the MOST RELIABLE source - fetched directly from Meari cloud alarm API
+        device_id = device_data.get('device_id')
+        if device_id:
+            try:
+                _LOGGER.debug("Fetching latest alarm image for device %s (ID: %s)", self._attr_name, device_id)
+                alarm_image = await self.hass.async_add_executor_job(
+                    self.coordinator.client.get_latest_alarm_image,
+                    device_id,
+                    self._serial_number
+                )
+                if alarm_image and len(alarm_image) > 100:
+                    # Validate it's an image (JPEG starts with FFD8, PNG with 89 50 4E 47)
+                    if alarm_image[:2] == b'\xff\xd8' or alarm_image[:4] == b'\x89PNG':
+                        _LOGGER.debug("Got valid alarm image (%d bytes) for %s", len(alarm_image), self._attr_name)
+                        return alarm_image
+                    _LOGGER.debug("Alarm image data is not valid JPEG/PNG format")
+            except Exception as e:
+                _LOGGER.debug("Failed to get alarm image for %s: %s", self._attr_name, e)
+
+        # === PRIORITY 2: Cloud-stored thumbnail URL from device data ===
+        # Fallback to stored thumbnail URL from API response
         thumbnail_url = device_data.get('thumbnail_url')
         if thumbnail_url and isinstance(thumbnail_url, str) and thumbnail_url.startswith(('http://', 'https://')):
             _LOGGER.debug("Trying cloud thumbnail URL: %s", thumbnail_url[:80])
@@ -225,7 +245,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             if result:
                 return result
 
-        # === PRIORITY 2: Check device_info for any image URLs ===
+        # === PRIORITY 3: Check device_info for any image URLs ===
         # Some API responses include image URLs under various field names
         for key in ['deviceImg', 'coverImgUrl', 'thumbUrl', 'imageUrl', 'alarmImgUrl', 'lastAlarmUrl']:
             url = device_data.get(key)
@@ -235,7 +255,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                 if result:
                     return result
 
-        # === PRIORITY 3: Check configuration for ONVIF/RTSP URLs ===
+        # === PRIORITY 4: Check configuration for ONVIF/RTSP URLs ===
         # Some devices may expose ONVIF or RTSP URLs that could have snapshot endpoints
         config = device_data.get("configuration") or {}
         
