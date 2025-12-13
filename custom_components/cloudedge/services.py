@@ -21,6 +21,7 @@ SERVICE_REFRESH_PARAMETERS = "refresh_parameters"
 SERVICE_DEBUG_API_STATUS = "debug_api_status"
 SERVICE_GET_COORDINATOR_INFO = "get_coordinator_info"
 SERVICE_CLEAR_CACHE = "clear_cache"
+SERVICE_PROBE_SNAPSHOT = "probe_snapshot"
 
 # Service schemas
 SET_PARAMETER_SCHEMA = vol.Schema(
@@ -53,6 +54,12 @@ REFRESH_PARAMETERS_SCHEMA = vol.Schema(
 GET_COORDINATOR_INFO_SCHEMA = vol.Schema({})
 
 CLEAR_CACHE_SCHEMA = vol.Schema({})  # No parameters needed
+PROBE_SNAPSHOT_SCHEMA = vol.Schema(
+    {
+        vol.Required("device_name"): cv.string,
+        vol.Optional("force_reprobe", default=False): cv.boolean,
+    }
+)
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
@@ -235,6 +242,52 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         else:
             _LOGGER.warning("Failed to refresh parameters for device %s", device_name)
 
+    async def async_probe_snapshot(call: ServiceCall) -> None:
+        """Probe the cloud snapshot endpoints for a device and report results."""
+        device_name = call.data.get("device_name")
+        force_reprobe = call.data.get("force_reprobe", False)
+
+        _LOGGER.debug("Probing snapshot endpoints for device %s (force: %s)", device_name, force_reprobe)
+
+        # Find coordinator containing this device
+        coordinator = None
+        device_info = None
+        for entry_id, coord in hass.data[DOMAIN].items():
+            if hasattr(coord, "client"):
+                try:
+                    device = await hass.async_add_executor_job(coord.client.find_device_by_name, device_name)
+                    if device:
+                        coordinator = coord
+                        device_info = device
+                        break
+                except Exception as e:
+                    _LOGGER.debug("Error finding device in coordinator %s: %s", entry_id, e)
+
+        if not coordinator or not device_info:
+            _LOGGER.error("Device %s not found for snapshot probe", device_name)
+            return
+
+        device_id = device_info.get('device_id') or device_info.get('deviceId')
+        device_serial = device_info.get('serial_number') or device_info.get('serial')
+        if not device_serial:
+            # Try common serial keys
+            device_serial = device_info.get('serialNumber') or device_info.get('sn')
+
+        try:
+            result = await hass.async_add_executor_job(
+                coordinator.client.probe_snapshot_endpoint,
+                device_id,
+                device_serial,
+                force_reprobe,
+            )
+            endpoint_info = result.get('endpoint_info') if result else None
+            if endpoint_info:
+                _LOGGER.info("Probe result for %s: endpoint=%s", device_name, endpoint_info)
+            else:
+                _LOGGER.warning("Probe result for %s: no usable endpoint found", device_name)
+        except Exception as e:
+            _LOGGER.error("Probe snapshot endpoint failed for %s: %s", device_name, e)
+
     
 
     async def async_get_coordinator_info(call: ServiceCall) -> None:
@@ -318,6 +371,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=CLEAR_CACHE_SCHEMA,
     )
 
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PROBE_SNAPSHOT,
+        async_probe_snapshot,
+        schema=PROBE_SNAPSHOT_SCHEMA,
+    )
+
     _LOGGER.info("CloudEdge services registered")
 
 
@@ -329,4 +389,5 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_REFRESH_PARAMETERS)
     hass.services.async_remove(DOMAIN, SERVICE_GET_COORDINATOR_INFO)
     hass.services.async_remove(DOMAIN, SERVICE_CLEAR_CACHE)
+    hass.services.async_remove(DOMAIN, SERVICE_PROBE_SNAPSHOT)
     _LOGGER.info("CloudEdge services unloaded")

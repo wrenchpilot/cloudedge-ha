@@ -21,14 +21,17 @@ from .const import (
     CONF_REGION,
     CONF_BASE_URL,
     CONF_OPENAPI_BASE_URL,
-    CONF_DISABLE_P2P,
+    CONF_P2P_MODE,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_COUNTRY_CODE,
     DEFAULT_PHONE_CODE,
     DEFAULT_REGION,
     REGIONS,
     COUNTRY_CODES,
-    DEFAULT_DISABLE_P2P,
+    DEFAULT_P2P_MODE,
+    P2P_MODE_AUTO,
+    P2P_MODE_DISABLED,
+    P2P_MODE_FORCE_LOCAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,7 +52,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_REGION, default=DEFAULT_REGION): vol.In(list(REGIONS)),
         vol.Optional(CONF_BASE_URL, default=""): str,
         vol.Optional(CONF_OPENAPI_BASE_URL, default=""): str,
-        vol.Optional(CONF_DISABLE_P2P, default=True): bool,
+        vol.Optional(CONF_P2P_MODE, default=DEFAULT_P2P_MODE): vol.In([P2P_MODE_AUTO, P2P_MODE_DISABLED, P2P_MODE_FORCE_LOCAL]),
+        vol.Optional(CONF_DEBUG, default=DEFAULT_DEBUG): bool,
     }
 )
 
@@ -69,7 +73,20 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     region = data.get(CONF_REGION)
     base_url = data.get(CONF_BASE_URL) or None
     openapi_base_url = data.get(CONF_OPENAPI_BASE_URL) or None
-    disable_p2p = data.get(CONF_DISABLE_P2P, DEFAULT_DISABLE_P2P)
+    p2p_mode = data.get(CONF_P2P_MODE, DEFAULT_P2P_MODE)
+    debug_enabled = data.get(CONF_DEBUG, DEFAULT_DEBUG)
+    # Backwards compat for old flags
+    # If user kept older keys in the entry, map them; otherwise derive from p2p_mode
+    disable_p2p_flag = data.get('disable_p2p', None)
+    force_local_flag = data.get('force_local_p2p', None)
+    if disable_p2p_flag is not None:
+        disable_p2p = bool(disable_p2p_flag)
+    else:
+        disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
+    if force_local_flag is not None:
+        force_local_p2p = bool(force_local_flag)
+    else:
+        force_local_p2p = (p2p_mode == P2P_MODE_FORCE_LOCAL)
     phone_code = data[CONF_PHONE_CODE]
 
     try:
@@ -89,10 +106,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             password=password,
             country_code=country_code,
             phone_code=phone_code,
-            debug=False,  # Enable debug to see API errors
+            debug=debug_enabled,  # Enable debug to see API errors if requested
             region=normalized_region,
             base_url=base_url,
             openapi_base_url=openapi_base_url,
+            disable_p2p=disable_p2p,
+            force_local_p2p=force_local_p2p,
         )
 
         # Test authentication
@@ -125,7 +144,9 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         return {
             "title": f"CloudEdge ({username})",
             "device_count": device_count,
-            "disable_p2p": disable_p2p,
+            "p2p_mode": p2p_mode,
+            "debug": debug_enabled,
+            "force_local_p2p": force_local_p2p,
         }
 
     except AuthenticationError as e:

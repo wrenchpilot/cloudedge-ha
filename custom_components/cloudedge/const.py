@@ -9,7 +9,8 @@ CONF_COUNTRY_CODE = "country_code"
 CONF_REGION = "region"
 CONF_BASE_URL = "base_url"
 CONF_OPENAPI_BASE_URL = "openapi_base_url"
-CONF_DISABLE_P2P = "disable_p2p"
+CONF_P2P_MODE = "p2p_mode"
+CONF_DEBUG = "debug"
 CONF_PHONE_CODE = "phone_code"
 CONF_REFRESH_INTERVAL = "refresh_interval"
 
@@ -46,7 +47,11 @@ COUNTRY_CODES = {
 # Supported regions. AUTO means pick based on country_code, otherwise explicit region
 REGIONS = ["AUTO", "EU", "US"]
 # Option: disable direct/local P2P snapshot attempts and rely on cloud API only
-DEFAULT_DISABLE_P2P = True
+P2P_MODE_AUTO = "auto"
+P2P_MODE_DISABLED = "disabled"
+P2P_MODE_FORCE_LOCAL = "force_local"
+DEFAULT_DEBUG = False
+DEFAULT_P2P_MODE = P2P_MODE_DISABLED
 
 # Device types mapping
 DEVICE_TYPE_CAMERA = "Camera"

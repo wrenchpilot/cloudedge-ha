@@ -298,22 +298,24 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         aws_cloud_compat = device_data.get('aws_cloud_compat') or device_data.get('awsCloudCompat', 0)
         is_cloud_only = (iot_type == 3 and aws_cloud_compat == 1)
         
-        if is_cloud_only and cloud_support == 0:
+        if is_cloud_only and cloud_support == 0 and not getattr(self.coordinator.client, 'force_local_p2p', False):
             _LOGGER.debug(
                 "No snapshot available for %s - cloud-only camera (iotType=%s) without cloud subscription",
                 self._attr_name, iot_type
             )
             return None
-        elif is_cloud_only and cloud_support == 1:
+        elif is_cloud_only and cloud_support == 1 and not getattr(self.coordinator.client, 'force_local_p2p', False):
             _LOGGER.debug(
                 "Camera %s uses cloud-mediated P2P (iotType=%s) - attempting cloud snapshot APIs rather than P2P",
                 self._attr_name, iot_type
             )
+        elif is_cloud_only and getattr(self.coordinator.client, 'force_local_p2p', False):
+            _LOGGER.debug("Cloud-only device but force_local_p2p enabled: attempting local capture for %s", self._attr_name)
 
         
         # Attempt P2P snapshot (direct LAN or cloud-mediated wake) if we have a device ID
         p2p_tried = False
-        if device_id and device_ip:
+        if device_id and device_ip and (not self.coordinator.client.disable_p2p or self.coordinator.client.force_local_p2p):
             p2p_tried = True
             _LOGGER.debug("Attempting P2P snapshot for %s (ID: %s, IP: %s)", 
                          self._attr_name, device_id, device_ip)
@@ -328,7 +330,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                 _LOGGER.debug("P2P snapshot failed for %s: %s", self._attr_name, e)
 
         # If we haven't yet tried P2P (no LAN IP), attempt cloud-mediated P2P via wake/connect
-        if device_id and not p2p_tried:
+        if device_id and not p2p_tried and (not self.coordinator.client.disable_p2p or self.coordinator.client.force_local_p2p):
             try:
                 _LOGGER.debug("Attempting cloud-mediated P2P snapshot for %s (ID: %s)", self._attr_name, device_id)
                 p2p_snapshot = await self._get_p2p_snapshot(device_id, device_ip, device_data)
@@ -358,10 +360,28 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         Returns:
             JPEG image bytes if successful, None otherwise.
         """
-        # Direct LAN P2P disabled for snapshots: prefer API endpoints and cloud relay.
-        # We won't attempt aiopppp/local P2P; instead, try cloud-mediated P2P via wake_device.
-        # If you need direct P2P later, implement a config flag to enable it.
+        # Attempt direct LAN P2P first if user forces local P2P or if we detect LAN IP
+        # We will attempt a direct LAN P2P connection for snapshot when force_local_p2p is set
         try:
+            # If user forces local P2P and we have a device_ip, try direct LAN route first
+            if device_ip and getattr(self.coordinator.client, 'force_local_p2p', False):
+                try:
+                    from .tools.cloudedge_p2p_client import CloudEdgeP2PClient
+                    p2p_client_local = CloudEdgeP2PClient(
+                        serial=device_data.get('serial_number') or self._serial_number,
+                        camera_ip=device_ip,
+                        host_key=device_data.get('host_key'),
+                        debug=self.coordinator.client.debug,
+                    )
+                    connected_local = await self.hass.async_add_executor_job(p2p_client_local.connect_after_wake, 10.0)
+                    if connected_local:
+                        snapshot_local = await self.hass.async_add_executor_job(p2p_client_local.request_snapshot)
+                        p2p_client_local.close()
+                        if snapshot_local and len(snapshot_local) > 100 and (snapshot_local[:2] == b'\xff\xd8' or snapshot_local[:4] == b'\x89PNG'):
+                            _LOGGER.debug("Got valid local P2P snapshot (%d bytes) for %s", len(snapshot_local), self._attr_name)
+                            return snapshot_local
+                except Exception as e:
+                    _LOGGER.debug("Local P2P attempt failed for %s: %s", self._attr_name, e)
             wake_result = await self.hass.async_add_executor_job(
                 self.coordinator.client.wake_device,
                 device_id,
@@ -370,8 +390,8 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             _LOGGER.debug("Wake device call failed for %s: %s", self._attr_name, e)
             wake_result = None
 
-        # If wake_result is None or P2P is disabled in config, bail
-        if self.coordinator.client.disable_p2p:
+        # If P2P is disabled in config and not forced by user, bail
+        if self.coordinator.client.disable_p2p and not getattr(self.coordinator.client, 'force_local_p2p', False):
             _LOGGER.debug("P2P disabled in integration config - skipping P2P snapshot for %s", self._attr_name)
             return None
         if not wake_result:

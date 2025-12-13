@@ -28,6 +28,8 @@ from .const import (
     CONF_REGION,
     CONF_BASE_URL,
     CONF_OPENAPI_BASE_URL,
+    CONF_P2P_MODE,
+    CONF_DEBUG,
     CONF_DISABLE_P2P,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_REGION,
@@ -181,17 +183,24 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 if not self.username or not self.password:
                     _LOGGER.error("CloudEdge credentials missing: username or password not set in config entry")
                     raise AuthenticationError("Missing credentials in config entry")
+                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE)
+                disable_p2p = p2p_mode == "disabled" if p2p_mode is not None else self.config_entry.data.get(CONF_DISABLE_P2P, True)
+                force_local_p2p = p2p_mode == "force_local" if p2p_mode is not None else self.config_entry.data.get('force_local_p2p', False)
+                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE)
+                disable_p2p = p2p_mode == "disabled" if p2p_mode is not None else self.config_entry.data.get(CONF_DISABLE_P2P, True)
+                force_local_p2p = p2p_mode == "force_local" if p2p_mode is not None else self.config_entry.data.get('force_local_p2p', False)
                 self.client = CloudEdgeClient(
                     username=self.username,
                     password=self.password,
                     country_code=self.country_code,
                     phone_code=self.phone_code,
-                    debug=False,  # Enable debug logging
+                    debug=self.config_entry.data.get(CONF_DEBUG, False),  # Use config entry debug flag
                     session_cache_file=cache_path,
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
-                    disable_p2p=self.config_entry.data.get(CONF_DISABLE_P2P, True),
+                    disable_p2p=disable_p2p,
+                    force_local_p2p=force_local_p2p,
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for validation for user %s (region=%s, base_url=%s)",
@@ -279,13 +288,14 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     password=self.password,
                     country_code=self.country_code,
                     phone_code=self.phone_code,
-                    debug=False,  # Enable debug logging
+                    debug=self.config_entry.data.get(CONF_DEBUG, False),
                     session_cache_file=cache_path,
                     # Pass region and URL overrides from the config entry to ensure consistency
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
-                    disable_p2p=self.config_entry.data.get(CONF_DISABLE_P2P, True),
+                    disable_p2p=disable_p2p,
+                    force_local_p2p=force_local_p2p,
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for user %s (region=%s, base_url=%s)",

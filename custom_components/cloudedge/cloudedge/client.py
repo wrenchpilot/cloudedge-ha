@@ -69,9 +69,9 @@ class CloudEdgeClient:
         >>> for device in devices:
         ...     print(f"Device: {device['name']} - Status: {device['online']}")
     """
-    
-    BASE_URL = "https://apis-eu-frankfurt.cloudedge360.com"
-    OPENAPI_BASE_URL = "https://openapi-euce.mearicloud.com"
+
+    BASE_URL: str = ""
+    OPENAPI_BASE_URL: str = ""
     
     def __init__(
         self, 
@@ -87,6 +87,7 @@ class CloudEdgeClient:
         base_url: Optional[str] = None,
         openapi_base_url: Optional[str] = None,
         disable_p2p: bool = False,
+        force_local_p2p: bool = False,
         log_signature_debug: bool = False,
         use_epoch_timestamp: bool = False,
     ):
@@ -97,7 +98,7 @@ class CloudEdgeClient:
             username (str): CloudEdge account username
             password (str): CloudEdge account password
             country_code (str): Country code (e.g., "US", "IT")
-            phone_code (str): Phone country code (e.g., "+1", "+39")
+        force_local_p2p: bool = False,
             debug (bool): Enable debug logging
             session_cache_file (str): Path to session cache file
             enable_network_ping (bool): Enable ping-based online status when on same network
@@ -157,25 +158,23 @@ class CloudEdgeClient:
         # Network detection cache
         self._local_network = None
         self._network_detected = False
+        self.force_local_p2p = bool(force_local_p2p)
         # Cache wake_device results to avoid frequent wake calls
         self._last_wake_times: Dict[str, float] = {}
         self._last_wake_results: Dict[str, Dict] = {}
         
-        # Resolve base URLs for region; priority: explicit args -> region mapping -> defaults
+        # Resolve base URLs for region (priority: explicit args -> region mapping -> defaults)
+        resolved_region = region or ("US" if self.country_code == "US" else TYPE_REGION_EU)
+        urls = get_urls_for_region(resolved_region)
         if base_url:
             self.BASE_URL = base_url
         else:
-            # region may be explicitly provided by user or inferred from country_code
-            resolved_region = region or ("US" if self.country_code == "US" else TYPE_REGION_EU)
-            urls = get_urls_for_region(resolved_region)
-            self.BASE_URL = urls.get("BASE_URL")
+            self.BASE_URL = urls.get("BASE_URL") or ""
 
         if openapi_base_url:
             self.OPENAPI_BASE_URL = openapi_base_url
         else:
-            # Use the same region resolution
-            urls = get_urls_for_region(region or ("US" if self.country_code == "US" else TYPE_REGION_EU))
-            self.OPENAPI_BASE_URL = urls.get("OPENAPI_BASE_URL")
+            self.OPENAPI_BASE_URL = urls.get("OPENAPI_BASE_URL") or ""
 
         if self.debug:
             self._log(f"Using BASE_URL={self.BASE_URL} OPENAPI_BASE_URL={self.OPENAPI_BASE_URL}")
@@ -1727,6 +1726,39 @@ class CloudEdgeClient:
         user_cache[device_serial] = endpoint_info
         # Persist the updated cache to disk
         self._save_session_cache(self.session_data)
+
+    def clear_cached_snapshot_endpoint(self, device_serial: str) -> None:
+        """Remove the cached snapshot endpoint for a device to force re-probe."""
+        if not device_serial or not self.session_data:
+            return
+        try:
+            cache = self.session_data.setdefault('snapshotEndpointCache', {})
+            user_cache = cache.setdefault(str(self.session_data.get('userID')), {})
+            if device_serial in user_cache:
+                user_cache.pop(device_serial, None)
+                if self.debug:
+                    self._log(f"Cleared cached snapshot endpoint for {device_serial}")
+            self._save_session_cache(self.session_data)
+        except Exception:
+            pass
+
+    def probe_snapshot_endpoint(self, device_id: int, device_serial: str, force_reprobe: bool = False) -> Optional[Dict[str, Any]]:
+        """Probe snapshot endpoints for a device and return endpoint info (and optionally image via get_device_snapshot).
+
+        Returns a dict like { 'endpoint_info': {...}, 'image': b'...' } or None if not authenticated.
+        """
+        if not self.session_data:
+            raise AuthenticationError("Not authenticated - call authenticate() first")
+        if force_reprobe:
+            self.clear_cached_snapshot_endpoint(device_serial)
+
+        try:
+            image = self.get_device_snapshot(device_id, device_serial)
+        except Exception:
+            image = None
+
+        endpoint_info = self._get_cached_snapshot_endpoint(device_serial)
+        return { 'endpoint_info': endpoint_info, 'image': image }
 
     def _resolve_full_url(self, url: str) -> str:
         """
