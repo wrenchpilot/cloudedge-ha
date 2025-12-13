@@ -1267,6 +1267,9 @@ class CloudEdgeClient:
             
         access_id = iot_keys['accessid']
         access_key = iot_keys['accesskey']
+        openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
+        # Prefer explicit openapi domain returned by the IoT platform keys
+        openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
         
         # Generate signature for OpenAPI
         signature, timeout = self._get_signature_for_openapi('/openapi/device/config', 'get', access_key)
@@ -1305,7 +1308,7 @@ class CloudEdgeClient:
         try:
             response = self._make_request(
                 'GET',
-                f"{self.OPENAPI_BASE_URL}/openapi/device/config",
+                f"{openapi_base}/openapi/device/config",
                 headers=headers, 
                 params=params, 
                 timeout=DEFAULT_TIMEOUT
@@ -1391,7 +1394,7 @@ class CloudEdgeClient:
         try:
             response = self._make_request(
                 'GET',
-                f"{self.OPENAPI_BASE_URL}/openapi/device/config",
+                f"{openapi_base}/openapi/device/config",
                 headers=headers, 
                 params=params, 
                 timeout=DEFAULT_TIMEOUT

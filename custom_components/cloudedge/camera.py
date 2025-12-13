@@ -255,5 +255,16 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                 if result:
                     return result
 
+        # Fallback: if the device_info contains a deviceImg or deviceTypeName with an HTTP URL, try that
+        # Some backends incorrectly return an image URL under deviceTypeName or deviceImg
+        device_img = device_data.get('deviceImg') or device_data.get('deviceImg')
+        device_type_name = device_data.get('deviceTypeName')
+        for candidate in (device_img, device_type_name):
+            if isinstance(candidate, str) and candidate.lower().startswith(('http://', 'https://')):
+                _LOGGER.debug("Attempting fallback device image URL: %s", candidate)
+                result = _try_url(candidate)
+                if result:
+                    return result
+
         _LOGGER.debug("No snapshot available for %s", self._attr_name)
         return None

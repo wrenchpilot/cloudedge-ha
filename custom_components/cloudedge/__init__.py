@@ -502,8 +502,20 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 config = await self.hass.async_add_executor_job(
                     self.client.get_device_config, device_sn
                 )
-                _LOGGER.info("get_device_config returned for %s: %s", 
-                           device_name, "data" if config else "None")
+                _LOGGER.info("get_device_config returned for %s: %s", device_name, "data" if config else "None")
+                if config and isinstance(config, dict):
+                        # Log the keys we received for debug
+                        try:
+                            if 'result' in config and isinstance(config['result'], dict) and 'iot' in config['result']:
+                                _LOGGER.debug("Config keys for %s: %s", device_name, list(config['result']['iot'].keys()))
+                            elif 'iot' in config and isinstance(config['iot'], dict):
+                                _LOGGER.debug("Config keys for %s: %s", device_name, list(config['iot'].keys()))
+                            else:
+                                _LOGGER.debug("Config top-level keys for %s: %s", device_name, list(config.keys()))
+                                if 'result' in config and not config.get('result'):
+                                    _LOGGER.debug("config.result is empty; top-level keys: %s", list(config.keys()))
+                        except Exception:
+                            pass
             except Exception as e:
                 _LOGGER.error("get_device_config failed for %s: %s (type: %s)", 
                             device_name, str(e), type(e).__name__)
