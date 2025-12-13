@@ -40,7 +40,7 @@ async def async_setup_entry(
         _LOGGER.warning("No device data available yet, switch entities will be added when data is available")
         
         # Add a listener to create entities when data becomes available
-        async def _handle_coordinator_update():
+        def _handle_coordinator_update():
             if coordinator.data and not getattr(coordinator, '_switches_added', False):
                 _LOGGER.info("Device data is now available, adding switch entities")
                 switches = []

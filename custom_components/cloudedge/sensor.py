@@ -98,7 +98,7 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
     # Add a coordinator listener to add sensors dynamically when new configuration appears
-    async def _handle_coordinator_update():
+    def _handle_coordinator_update():
         new_entities = []
         for serial_number, device_info in coordinator.data.items():
             config = device_info.get('configuration') or {}
