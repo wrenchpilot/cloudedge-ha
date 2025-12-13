@@ -31,12 +31,23 @@ _tools_dir = os.path.dirname(os.path.abspath(__file__))
 _cloudedge_dir = os.path.dirname(_tools_dir)
 sys.path.insert(0, _cloudedge_dir)
 
-# Verify we're using local module
-from cloudedge.client import CloudEdgeClient
-import cloudedge.client as _client_module
-if 'cloudedge-ha' not in _client_module.__file__:
-    print(f"WARNING: Using pycloudedge from {_client_module.__file__}")
-    print(f"         Expected: cloudedge-ha local module")
+# Prefer package-qualified import when running as module; fall back to local package import
+try:
+    # When running with -m from repo root this resolves correctly
+    from custom_components.cloudedge.cloudedge.client import CloudEdgeClient
+    _client_module = __import__('custom_components.cloudedge.cloudedge.client', fromlist=['dummy'])
+except Exception:
+    # Fallback: adjust sys.path (already done above) and import local cloudedge package
+    from cloudedge.client import CloudEdgeClient
+    import cloudedge.client as _client_module
+
+# Warn if we're not using the local integration module
+try:
+    if 'cloudedge-ha' not in getattr(_client_module, '__file__', ''):
+        print(f"WARNING: Using pycloudedge from {_client_module.__file__}")
+        print(f"         Expected: cloudedge-ha local module")
+except Exception:
+    pass
 
 
 def check_p2p_reachable(device_ip: str, timeout: float = 3.0) -> bool:
