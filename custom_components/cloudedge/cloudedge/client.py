@@ -970,6 +970,15 @@ class CloudEdgeClient:
                     ),
                     'home_id': home_id,
                     'thumbnail_url': thumbnail_url,  # Cloud-stored thumbnail if available
+                    # P2P and Cloud capability indicators (for snapshot support detection)
+                    'iot_type': device.get('iotType'),
+                    'aws_cloud_compat': device.get('awsCloudCompat', 0),
+                    'cloud_support': device.get('cloudSupport', 0),
+                    'p2p_version': device.get('p2p'),
+                    'sleep': device.get('sleep'),
+                    'dev_status': device.get('devStatus'),
+                    'device_ip': device.get('lanIP') or device.get('deviceIP') or device.get('ip'),
+                    'firmware': device.get('firmwareVersion') or device.get('firmware'),
                 }
                 device_dict['online'] = self._get_enhanced_device_status(device_dict)
                 devices.append(device_dict)
@@ -1182,6 +1191,15 @@ class CloudEdgeClient:
                         'host_key': device.get('hostKey'),
                         'online': online_status,
                         'thumbnail_url': thumbnail_url,  # Cloud-stored thumbnail if available
+                        # P2P and Cloud capability indicators (for snapshot support detection)
+                        'iot_type': device.get('iotType'),
+                        'aws_cloud_compat': device.get('awsCloudCompat', 0),
+                        'cloud_support': device.get('cloudSupport', 0),
+                        'p2p_version': device.get('p2p'),
+                        'sleep': device.get('sleep'),
+                        'dev_status': device.get('devStatus'),
+                        'device_ip': device.get('lanIP') or device.get('deviceIP') or device.get('ip'),
+                        'firmware': device.get('firmwareVersion') or device.get('firmware'),
                     }
                     
                     # Get enhanced online status (may override with ping result)
@@ -1277,6 +1295,144 @@ class CloudEdgeClient:
             raise NetworkError(f"Device status request failed: {e}")
         except json.JSONDecodeError:
             raise CloudEdgeError("Failed to parse device status response")
+            
+    def wake_device(self, device_id: str) -> Dict:
+        """
+        Wake a sleeping device and get P2P connection parameters.
+        
+        This calls the removeWake.action API which:
+        1. Wakes the camera from sleep mode
+        2. Opens a UDP port on the camera for P2P connection
+        3. Returns P2P connection string (getConnectString) with parameters
+        
+        Args:
+            device_id (str): Device ID
+            
+        Returns:
+            Dict: P2P connection parameters including:
+                - udpport: UDP port for P2P connection
+                - did: Device identifier for P2P
+                - initstring: Initialization string for P2P handshake
+                - licenceid: Camera serial/license ID
+                - protocolv: Protocol version
+                - username: P2P username (usually 'admin')
+                - password: P2P password (MD5 hash)
+                - mode: Connection mode
+                - trytimes: Retry count
+                - delaysec: Delay between retries
+            
+        Raises:
+            AuthenticationError: If not authenticated
+            NetworkError: If network request fails
+            CloudEdgeError: If wake request fails
+        """
+        if not self.session_data:
+            raise AuthenticationError("Not authenticated - call authenticate() first")
+            
+        self._log(f"Waking device ID: {device_id}")
+        
+        device_body = self._generate_device_body({'deviceID': device_id})
+        
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+        }
+        
+        # Try multiple potential wake endpoints - the endpoint varies by region/server
+        wake_endpoints = [
+            f"{self.BASE_URL}/ppstrongs/removeWake.action",
+            f"{self.BASE_URL}/v1/app/device/wake",
+            f"{self.BASE_URL}/app/device/wake.action",
+            # Try meari.com.cn endpoints (older servers)
+            "https://api-us.meari.com.cn/ppstrongs/removeWake.action",
+            "https://apis-eu-frankfurt.meari.com.cn/ppstrongs/removeWake.action",
+        ]
+        
+        # Also try OpenAPI endpoint if available
+        iot_keys = self.session_data.get('iotPlatformKeys', {})
+        if iot_keys.get('openapidomain'):
+            openapi_domain = iot_keys['openapidomain']
+            if not openapi_domain.startswith('http'):
+                openapi_domain = f"https://{openapi_domain}"
+            wake_endpoints.insert(1, f"{openapi_domain}/v1/app/device/wake")
+        
+        last_error = None
+        for endpoint in wake_endpoints:
+            try:
+                self._log(f"Trying wake endpoint: {endpoint}")
+                response = self._session.post(
+                    endpoint,
+                    headers=headers, 
+                    data=device_body,
+                    timeout=DEFAULT_TIMEOUT
+                )
+                
+                # Skip 404s silently and try next endpoint
+                if response.status_code == 404:
+                    self._log(f"  -> 404 Not Found, trying next endpoint")
+                    continue
+                    
+                response.raise_for_status()
+                response_data = response.json()
+                
+                if self.debug:
+                    self._log(f"Wake device response: {response_data}")
+                
+                if response_data.get("resultCode") == "1001":
+                    result = response_data.get("result", {}) or response_data.get("resultData", {})
+                    
+                    # Parse getConnectString if present
+                    connect_string_raw = result.get("getConnectString", "")
+                    if connect_string_raw:
+                        try:
+                            connect_params = json.loads(connect_string_raw)
+                            self._log(f"P2P connection params obtained for device {device_id}")
+                            return {
+                                'success': True,
+                                'connect_string': connect_params,
+                                'raw_result': result
+                            }
+                        except json.JSONDecodeError:
+                            self._log(f"Warning: Failed to parse getConnectString: {connect_string_raw}")
+                            return {
+                                'success': True,
+                                'connect_string_raw': connect_string_raw,
+                                'raw_result': result
+                            }
+                    else:
+                        # No connect string - device may be online and ready
+                        self._log(f"Device {device_id} woken but no connect string returned")
+                        return {
+                            'success': True,
+                            'connect_string': None,
+                            'raw_result': result
+                        }
+                elif response_data.get("resultCode") not in [None, "1003", "1023"]:
+                    # Got a real error response, not just endpoint not found
+                    error_msg = response_data.get('resultMsg', 'Unknown error')
+                    error_code = response_data.get('resultCode', 'unknown')
+                    self._log(f"Wake endpoint returned error: {error_code} - {error_msg}")
+                    last_error = CloudEdgeError(
+                        f"Failed to wake device: {error_msg}",
+                        details={"error_code": error_code, "device_id": device_id}
+                    )
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    continue  # Try next endpoint
+                last_error = e
+            except requests.exceptions.RequestException as e:
+                last_error = e
+            except json.JSONDecodeError:
+                continue  # Try next endpoint
+                
+        # All endpoints failed
+        if last_error:
+            raise NetworkError(f"Device wake request failed on all endpoints: {last_error}")
+        else:
+            raise CloudEdgeError("Wake endpoint not found on any known server")
             
     def get_device_config(self, device_serial: str, 
                           parameter_codes: Optional[List[str]] = None) -> Optional[Dict]:
