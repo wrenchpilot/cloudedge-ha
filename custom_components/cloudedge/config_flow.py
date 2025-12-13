@@ -85,7 +85,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             password=password,
             country_code=country_code,
             phone_code=phone_code,
-            debug=True,  # Enable debug to see API errors
+            debug=False,  # Enable debug to see API errors
             region=normalized_region,
             base_url=base_url,
             openapi_base_url=openapi_base_url,
