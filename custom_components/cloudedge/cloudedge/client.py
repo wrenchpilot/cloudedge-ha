@@ -94,6 +94,7 @@ class CloudEdgeClient:
         p2p_mode: Optional[str] = None,
         log_signature_debug: bool = False,
         use_epoch_timestamp: bool = False,
+        probe_allow_insecure: bool = False,
     ):
         """
         Initialize CloudEdge API client.
@@ -150,6 +151,11 @@ class CloudEdgeClient:
         self.log_signature_debug = log_signature_debug
         # Use epoch milliseconds for 'timestamp' fields on v1 endpoints
         self.use_epoch_timestamp = use_epoch_timestamp
+
+        # Allow disabling TLS verification for snapshot probing (debug only)
+        # WARNING: This should be False in production; only enable when diagnosing
+        # certificate / hostname issues.
+        self.probe_allow_insecure = bool(probe_allow_insecure)
         
         self.session_cache_file = session_cache_file
         self.enable_network_ping = enable_network_ping
@@ -185,6 +191,8 @@ class CloudEdgeClient:
 
         if self.debug:
             self._log(f"Using BASE_URL={self.BASE_URL} OPENAPI_BASE_URL={self.OPENAPI_BASE_URL}")
+        if self.probe_allow_insecure:
+            self._log("Probe TLS verification is DISABLED (insecure) - only enable for debugging")
         # Per-account and device cached endpoints for snapshot retrieval
         # Structure: {'snapshotEndpointCache': {userID: {serial: endpoint_info}}}
         self.disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
@@ -2397,8 +2405,9 @@ class CloudEdgeClient:
             openapi_domain = iot_keys['openapidomain']
             if not openapi_domain.startswith('http'):
                 openapi_domain = f"https://{openapi_domain}"
+            # Ensure the per-account OpenAPI domain is tried first
             if openapi_domain not in candidate_bases:
-                candidate_bases.insert(1, openapi_domain)
+                candidate_bases.insert(0, openapi_domain)
 
         # Construct the full list of snapshot endpoints to probe
         snapshot_endpoints = []
@@ -2422,7 +2431,7 @@ class CloudEdgeClient:
                 url = f"{endpoint}?{params_str}&signature={signature_encoded}"
                 # Use session.get directly to prevent _make_request from logging HTTPError
                 try:
-                    response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                 except requests.exceptions.RequestException as e:
                     if self.debug:
                         self._log(f"Snapshot endpoint {endpoint} failed to connect: {e}")
@@ -2445,7 +2454,7 @@ class CloudEdgeClient:
                     post_headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
                     if self.debug:
                         self._log(f"Attempting POST fallback to snapshot endpoint: {endpoint}")
-                    post_resp = self._session.post(endpoint, headers=post_headers, data=base_params, timeout=DEFAULT_TIMEOUT)
+                    post_resp = self._session.post(endpoint, headers=post_headers, data=base_params, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                     post_ct = post_resp.headers.get('Content-Type', '')
                     if post_resp.status_code == 200 and post_ct and 'image' in post_ct:
                         self._log(f"Snapshot endpoint returned image via POST: {endpoint} (Content-Type: {post_ct})")
@@ -2496,7 +2505,7 @@ class CloudEdgeClient:
                         # Download image using session.get directly
                         try:
                             img_url = self._resolve_full_url(image_url)
-                            img_resp = self._session.get(img_url, timeout=DEFAULT_TIMEOUT)
+                            img_resp = self._session.get(img_url, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                             if img_resp.status_code == 200:
                                 self._log(f"Downloaded image from URL returned by endpoint {endpoint}: {img_url}")
                                 content = img_resp.content
@@ -2605,7 +2614,7 @@ class CloudEdgeClient:
                     query.update(params)
                     url = f"{openapi_base}{path}"
                     self._log(f"Trying openapi file endpoint: {url} (params {list(params.keys())})")
-                    resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT)
+                    resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                 else:
                     # v1 and other endpoints require xca headers and standard signature
                     timestamp = self._generate_url_timestamp()
@@ -2633,7 +2642,7 @@ class CloudEdgeClient:
                     req_headers = headers.copy()
                     req_headers.update(xca_headers)
                     self._log(f"Trying v1 file endpoint: {url}")
-                    resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT)
+                    resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                 if resp.status_code == 200:
                     # If content-type is image, return raw
                     ct = resp.headers.get('Content-Type', '')
@@ -2670,7 +2679,7 @@ class CloudEdgeClient:
                             if val and isinstance(val, str) and val.startswith('http'):
                                 try:
                                     full_val = self._resolve_full_url(val)
-                                    img = self._session.get(full_val, timeout=DEFAULT_TIMEOUT)
+                                    img = self._session.get(full_val, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
                                     if img.status_code == 200 and 'image' in img.headers.get('Content-Type', ''):
                                         content = img.content
                                         # Decrypt if necessary
