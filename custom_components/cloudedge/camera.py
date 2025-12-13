@@ -274,30 +274,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             except Exception as e:
                 _LOGGER.debug("Cloud snapshot API failed for %s: %s", self._attr_name, e)
 
-        # === PRIORITY 4: Check configuration for ONVIF/RTSP URLs ===
-        # Some devices may expose ONVIF or RTSP URLs that could have snapshot endpoints
-        config = device_data.get("configuration") or {}
-        
-        # Look for ONVIF URL (parameter code 123)
-        onvif_url = None
-        for code, info in config.items():
-            pname = get_parameter_name(code)
-            if pname == 'ONVIF_URL':
-                onvif_url = info.get('value') if isinstance(info, dict) else info
-                break
-        if not onvif_url:
-            onvif_url = config.get('123')
-        
-        if onvif_url and isinstance(onvif_url, str) and onvif_url.startswith(('http://', 'https://')):
-            _LOGGER.debug("Trying ONVIF URL: %s", onvif_url)
-            result = await _try_url(onvif_url)
-            if result:
-                return result
 
-        # === NO LOCAL IP ATTEMPTS ===
-        # CloudEdge/Meari cameras use TUTK P2P protocol and do NOT serve HTTP on their IP.
-        # Attempting local IPs just wastes time with connection timeouts.
-        
         # === PRIORITY 5: P2P snapshot (wake device, connect via P2P, capture frame) ===
         # Only attempt P2P for cameras that support it (not cloud-only AWS IoT cameras)
         device_ip = device_data.get('device_ip')
@@ -370,19 +347,9 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         Returns:
             JPEG image bytes if successful, None otherwise.
         """
-        # Quick connectivity check - if camera responds to UDP probe, prefer direct P2P
-        p2p_reachable = await self._check_p2p_reachable(device_ip)
-        
-        try:
-            # If direct P2P reachable, try aiopppp library for direct P2P connection
-            if p2p_reachable:
-                p2p_snapshot = await self._capture_via_aiopppp(device_ip, {}, device_data)
-                if p2p_snapshot:
-                    return p2p_snapshot
-        except Exception as e:
-            _LOGGER.debug("P2P snapshot error for %s: %s", self._attr_name, e)
-
-        # If direct P2P failed or not reachable, try cloud-mediated P2P via wake_device
+        # Direct LAN P2P disabled for snapshots: prefer API endpoints and cloud relay.
+        # We won't attempt aiopppp/local P2P; instead, try cloud-mediated P2P via wake_device.
+        # If you need direct P2P later, implement a config flag to enable it.
         try:
             wake_result = await self.hass.async_add_executor_job(
                 self.coordinator.client.wake_device,
@@ -412,10 +379,10 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         try:
             from .tools.cloudedge_p2p_client import CloudEdgeP2PClient
 
-            # Instantiate client using parsed connect params
-            p2p_client = CloudEdgeP2PClient.from_connect_string(connect_params, camera_ip=device_ip, debug=self.coordinator.client.debug)
+            # Instantiate client using parsed connect params - pass camera_ip=None to ensure we don't attempt LAN
+            p2p_client = CloudEdgeP2PClient.from_connect_string(connect_params, camera_ip=None, debug=self.coordinator.client.debug)
 
-            # Connect (this is blocking) via executor
+            # Connect via relay (this is blocking) via executor
             connected = await self.hass.async_add_executor_job(p2p_client.connect_after_wake, 15.0)
             if not connected:
                 _LOGGER.debug("Cloud P2P client failed to connect for %s", self._attr_name)
