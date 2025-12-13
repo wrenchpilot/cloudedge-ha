@@ -114,18 +114,22 @@ def test_alarm_endpoints(client: CloudEdgeClient, device_id: int, device_serial:
 
 def main():
     if len(sys.argv) < 5:
-        print("Usage: python test_alarm_api.py <username> <password> <country_code> <phone_code>")
+        print("Usage: python test_alarm_api.py <username> <password> <country_code> <phone_code> [--fresh]")
         print("Example: python test_alarm_api.py user@example.com mypassword US +1")
+        print("Add --fresh to clear cached session and force fresh login")
         sys.exit(1)
     
     username = sys.argv[1]
     password = sys.argv[2]
     country_code = sys.argv[3]
     phone_code = sys.argv[4]
+    force_fresh = '--fresh' in sys.argv
     
     print(f"CloudEdge Alarm API Endpoint Discovery Tool")
     print(f"User: {username}")
     print(f"Region: {country_code}")
+    if force_fresh:
+        print("Mode: FRESH LOGIN (ignoring cache)")
     
     # Create client with debug enabled
     client = CloudEdgeClient(
@@ -135,6 +139,20 @@ def main():
         phone_code=phone_code,
         debug=True
     )
+    
+    # Clear cache if requested
+    if force_fresh:
+        import os
+        import glob
+        cache_files = glob.glob(os.path.expanduser("~/.cloudedge_session_cache*"))
+        for f in cache_files:
+            try:
+                os.remove(f)
+                print(f"Removed cache file: {f}")
+            except Exception as e:
+                print(f"Could not remove {f}: {e}")
+        # Also clear internal session
+        client.session_data = None
     
     print("\nAuthenticating...")
     try:
@@ -147,10 +165,11 @@ def main():
         print(f"✗ Authentication error: {e}")
         sys.exit(1)
     
-    # Get devices
+    # Get devices - try multiple methods
     print("\nFetching devices...")
     try:
-        devices = client.get_devices()
+        # Try get_all_devices which has fallback logic
+        devices = client.get_all_devices()
         if not devices:
             print("✗ No devices found!")
             sys.exit(1)

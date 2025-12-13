@@ -1102,6 +1102,11 @@ class CloudEdgeClient:
             )
             response_data = response.json()
             
+            # Debug: Always log the response code and structure for troubleshooting
+            if self.debug:
+                self._log(f"get_devices response code: {response_data.get('resultCode')}, msg: {response_data.get('resultMsg')}")
+                self._log(f"get_devices response keys: {list(response_data.keys())}")
+            
             if response_data.get("resultCode") == "1001":
                 self._log("Devices retrieved successfully!")
                 
