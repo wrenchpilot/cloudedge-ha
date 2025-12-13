@@ -579,6 +579,11 @@ class CloudEdgeClient:
         self.session_data = self._load_session_cache()
         if self.session_data:
             self._log("Using cached session")
+            # Update OPENAPI_BASE_URL from cached iotPlatformKeys if available
+            iot_keys = self.session_data.get('iotPlatformKeys', {})
+            if iot_keys and iot_keys.get('openapidomain'):
+                self.OPENAPI_BASE_URL = iot_keys.get('openapidomain')
+                self._log(f"Updated OPENAPI_BASE_URL from cached iotPlatformKeys: {self.OPENAPI_BASE_URL}")
             return True
             
         self._log("Performing CloudEdge login...")
@@ -1102,7 +1107,6 @@ class CloudEdgeClient:
                 
                 # Debug: Log the actual response structure
                 if self.debug:
-                    import json
                     self._log(f"API Response structure: {json.dumps(response_data, indent=2)}")
                 
                 devices = []
