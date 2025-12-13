@@ -70,25 +70,32 @@ async def async_setup_entry(
                     sensors.append(CloudEdgeConfigSensor(
                         coordinator, serial_number, device_info, param_name, param_key
                     ))
-            
-                for param_code, param_info in config.items():
-                    if param_code not in SENSOR_PARAMETERS.values():
-                        iot_param_info = IOT_PARAMETERS.get(param_code)
-                    if iot_param_info:
-                        param_name = iot_param_info["name"].lower()
-                    else:
-                        param_name = f"param_{param_code}"
-                    enabled = param_code in ENABLED_BY_DEFAULT_SENSOR_PARAMS
-                    if enabled:
-                        _LOGGER.debug("Creating enabled-by-default sensor: %s (code %s)", param_name, param_code)
-                    # Avoid creating the same sensor twice
+                    # Mark this parameter as created to avoid generating a duplicate generic sensor
                     created_set = coordinator._created_sensors.setdefault(serial_number, set())
-                    if param_code in created_set:
-                        continue
-                    sensors.append(CloudEdgeGenericSensor(
-                        coordinator, serial_number, device_info, param_name, param_code, param_info
-                    ))
-                    created_set.add(param_code)
+                    created_set.add(param_key)
+
+            # Now add generic sensors for any remaining configuration parameters that don't already have
+            # named sensor entities defined in SENSOR_PARAMETERS
+            for param_code, param_info in config.items():
+                # Skip parameters that are explicitly mapped to named sensors
+                if param_code in SENSOR_PARAMETERS.values():
+                    continue
+                iot_param_info = IOT_PARAMETERS.get(param_code)
+                if iot_param_info:
+                    param_name = iot_param_info["name"].lower()
+                else:
+                    param_name = f"param_{param_code}"
+                enabled = param_code in ENABLED_BY_DEFAULT_SENSOR_PARAMS
+                if enabled:
+                    _LOGGER.debug("Creating enabled-by-default sensor: %s (code %s)", param_name, param_code)
+                # Avoid creating the same sensor twice
+                created_set = coordinator._created_sensors.setdefault(serial_number, set())
+                if param_code in created_set:
+                    continue
+                sensors.append(CloudEdgeGenericSensor(
+                    coordinator, serial_number, device_info, param_name, param_code, param_info
+                ))
+                created_set.add(param_code)
         # Always add a status sensor for the device (useful even if there are config sensors)
         sensors.append(CloudEdgeDeviceStatusSensor(
             coordinator, serial_number, device_info
@@ -96,6 +103,7 @@ async def async_setup_entry(
 
     _LOGGER.info("Adding %d sensor entities", len(sensors))
     async_add_entities(sensors)
+    coordinator._sensors_added = True
 
     # Add a coordinator listener to add sensors dynamically when new configuration appears
     def _handle_coordinator_update():
