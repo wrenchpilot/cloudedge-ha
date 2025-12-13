@@ -1767,40 +1767,7 @@ class CloudEdgeClient:
         if force_reprobe:
             self.clear_cached_snapshot_endpoint(device_serial)
 
-        # Early exit: if device metadata indicates AWS cloud-only P2P and no cloud subscription,
-        # skip probing remote snapshot endpoints to avoid noise and return an intelligible error.
-        try:
-            devices = []
-            try:
-                devices = self.get_all_devices() or []
-            except Exception:
-                # Could not fetch devices list; fall back to probing as before
-                devices = []
-
-            device_meta = None
-            for d in devices:
-                # handle different key names across API versions
-                did = d.get('deviceID') or d.get('device_id') or d.get('deviceId')
-                if did and int(did) == int(device_id):
-                    device_meta = d
-                    break
-
-            if device_meta:
-                iot_type = device_meta.get('iotType') or device_meta.get('iot_type')
-                aws_cloud_compat = device_meta.get('awsCloudCompat') or device_meta.get('aws_cloud_compat')
-                cloud_support = device_meta.get('cloudSupport') or device_meta.get('cloud_support')
-                # If camera is AWS-cloud-only (iotType==3 and awsCloudCompat==1) and cloudSupport==0, skip probes
-                try:
-                    if int(iot_type or 0) == 3 and int(aws_cloud_compat or 0) == 1 and int(cloud_support or 0) == 0:
-                        if self.debug:
-                            self._log(f"Skipping remote snapshot probes for device {device_id}: cloud-only (iotType=3, awsCloudCompat=1) and cloudSupport=0")
-                        return { 'endpoint_info': None, 'image': None, 'error': 'device is cloud-only and account has no cloud subscription (cloudSupport=0)'}
-                except Exception:
-                    # If any conversion fails, continue to probing
-                    pass
-        except Exception:
-            # Any unexpected error during early-exit checks should not prevent probing
-            pass
+        # Note: No early-exit checks here — always attempt probing.
 
         try:
             image = self.get_device_snapshot(device_id, device_serial)
