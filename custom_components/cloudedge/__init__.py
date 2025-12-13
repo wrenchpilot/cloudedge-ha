@@ -283,6 +283,9 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 if not self.username or not self.password:
                     _LOGGER.error("CloudEdge credentials missing: username or password not set in config entry")
                     raise AuthenticationError("Missing credentials in config entry")
+                # Use p2p_mode from config entry as canonical setting
+                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE, DEFAULT_P2P_MODE)
+
                 self.client = CloudEdgeClient(
                     username=self.username,
                     password=self.password,

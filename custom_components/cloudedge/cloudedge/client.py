@@ -43,6 +43,8 @@ from .constants import (
     DEFAULT_TIMEOUT,
     TYPE_REGION_EU,
     get_urls_for_region,
+)
+from ..const import (
     DEFAULT_P2P_MODE,
     P2P_MODE_DISABLED,
     P2P_MODE_FORCE_LOCAL,
