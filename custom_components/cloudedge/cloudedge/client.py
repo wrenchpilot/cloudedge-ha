@@ -2403,6 +2403,31 @@ class CloudEdgeClient:
                         pass
                     return response.content
 
+                # Some servers expect a POST/form request for snapshot endpoints. Try POST as fallback.
+                try:
+                    post_headers = headers.copy()
+                    post_headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
+                    if self.debug:
+                        self._log(f"Attempting POST fallback to snapshot endpoint: {endpoint}")
+                    post_resp = self._session.post(endpoint, headers=post_headers, data=base_params, timeout=DEFAULT_TIMEOUT)
+                    post_ct = post_resp.headers.get('Content-Type', '')
+                    if post_resp.status_code == 200 and post_ct and 'image' in post_ct:
+                        self._log(f"Snapshot endpoint returned image via POST: {endpoint} (Content-Type: {post_ct})")
+                        try:
+                            self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "endpoint": endpoint, "method": "POST"})
+                        except Exception:
+                            pass
+                        return post_resp.content
+                    # If POST returned JSON with image URL or id, parse it below via post_resp.json()
+                    try:
+                        data = post_resp.json()
+                    except Exception:
+                        # not JSON, continue to next endpoint
+                        pass
+                except requests.exceptions.RequestException as e:
+                    if self.debug:
+                        self._log(f"Snapshot endpoint POST {endpoint} failed: {e}")
+
                 # If JSON, try to extract image URL or base64 payload
                 data = None
                 try:
