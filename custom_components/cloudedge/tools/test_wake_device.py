@@ -37,7 +37,8 @@ except ImportError:
     class CloudEdgeClient:
         """Minimal CloudEdge client for standalone testing."""
         
-        BASE_URL = "https://apis-us.meari.com.cn"
+        # Use the correct US region endpoint
+        BASE_URL = "https://apis.cloudedge360.com"
         DEFAULT_TIMEOUT = 30
         
         def __init__(self, debug=True):
