@@ -75,13 +75,42 @@ SENSOR_PARAMETERS = {
 
 # Parameter codes that should be enabled by default for generic sensors (DIAGNOSTIC)
 ENABLED_BY_DEFAULT_SENSOR_PARAMS = [
-    "154",   # BATTERY_PERCENT - Battery percentage (diagnostic)
+    "154",   # BATTERY_PERCENT - Battery percentage
+    "156",   # CHARGE_STATUS - Charging status
+    "101",   # WIFI_SIGNAL_QUALITY - WiFi signal
+    "114",   # SD_STATUS - SD card status
+    "115",   # SD_CAPACITY - SD card capacity
+    "116",   # SD_REMAINING_CAPACITY - SD remaining
+    "126",   # IP_ADDRESS - Device IP
+    "1012",  # DEVICE_TEMPERATURE - Temperature
 ]
 
 # Parameter names that should be enabled by default for switches (CONFIG)
 ENABLED_BY_DEFAULT_SWITCH_PARAMS = [
-    "MOTION_DET_ENABLE",  # Motion detection enable (config)
-    "LED_ENABLE",         # LED enable (config)
+    # Core camera controls
+    "MOTION_DET_ENABLE",      # Motion detection enable
+    "LED_ENABLE",             # LED enable
+    "ROTATE_ENABLE",          # Image rotation
+    
+    # Detection features
+    "PIR_DET_ENABLE",         # PIR detection enable
+    "HUMAN_DET_ENABLE",       # Human detection enable
+    "SOUND_DET_ENABLE",       # Sound detection enable
+    "CRY_DET_ENABLE",         # Cry detection enable
+    "HUMAN_TRACK_ENABLE",     # Human tracking enable
+    "HUMAN_FRAME_ENABLE",     # Human frame enable
+    
+    # Recording & streaming
+    "RECORD_SWITCH",          # Recording switch
+    "SD_RECORD_TYPE",         # SD recording type
+    "H265_ENABLE",            # H.265 encoding
+    "ONVIF_ENABLE",           # ONVIF enable
+    
+    # Power & sleep
+    "SLEEP_MODE",             # Sleep mode
+    
+    # Smart detection
+    "SMART_DET",              # Smart detection
 ]
 
 # Sensor device classes
