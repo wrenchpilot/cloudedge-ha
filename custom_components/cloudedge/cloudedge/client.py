@@ -156,6 +156,9 @@ class CloudEdgeClient:
         # Network detection cache
         self._local_network = None
         self._network_detected = False
+        # Cache wake_device results to avoid frequent wake calls
+        self._last_wake_times: Dict[str, float] = {}
+        self._last_wake_results: Dict[str, Dict] = {}
         
         # Resolve base URLs for region; priority: explicit args -> region mapping -> defaults
         if base_url:
@@ -1330,6 +1333,16 @@ class CloudEdgeClient:
             raise AuthenticationError("Not authenticated - call authenticate() first")
             
         self._log(f"Waking device ID: {device_id}")
+        # Avoid repeated wake calls - cache for a short period
+        try:
+            now = time.time()
+            last_ts = self._last_wake_times.get(device_id)
+            if last_ts and now - last_ts < 15:
+                if self.debug:
+                    self._log(f"Using cached wake result for device {device_id} (age {now-last_ts:.1f}s)")
+                return self._last_wake_results.get(device_id, {})
+        except Exception:
+            pass
         
         device_body = self._generate_device_body({'deviceID': device_id})
         
@@ -1389,26 +1402,37 @@ class CloudEdgeClient:
                         try:
                             connect_params = json.loads(connect_string_raw)
                             self._log(f"P2P connection params obtained for device {device_id}")
-                            return {
+                            result_dict = {
                                 'success': True,
                                 'connect_string': connect_params,
                                 'raw_result': result
                             }
+                            # Cache result
+                            self._last_wake_times[device_id] = time.time()
+                            self._last_wake_results[device_id] = result_dict
+                            return result_dict
                         except json.JSONDecodeError:
                             self._log(f"Warning: Failed to parse getConnectString: {connect_string_raw}")
-                            return {
+                            result_dict = {
                                 'success': True,
                                 'connect_string_raw': connect_string_raw,
                                 'raw_result': result
                             }
+                            # Cache result
+                            self._last_wake_times[device_id] = time.time()
+                            self._last_wake_results[device_id] = result_dict
+                            return result_dict
                     else:
                         # No connect string - device may be online and ready
                         self._log(f"Device {device_id} woken but no connect string returned")
-                        return {
+                        result_dict = {
                             'success': True,
                             'connect_string': None,
                             'raw_result': result
                         }
+                        self._last_wake_times[device_id] = time.time()
+                        self._last_wake_results[device_id] = result_dict
+                        return result_dict
                 elif response_data.get("resultCode") not in [None, "1003", "1023"]:
                     # Got a real error response, not just endpoint not found
                     error_msg = response_data.get('resultMsg', 'Unknown error')
@@ -2275,6 +2299,7 @@ class CloudEdgeClient:
                 # Some endpoints return an image directly
                 content_type = response.headers.get('Content-Type', '')
                 if response.status_code == 200 and content_type and 'image' in content_type:
+                    self._log(f"Snapshot endpoint returned image: {endpoint} (Content-Type: {content_type})")
                     return response.content
 
                 # If JSON, try to extract image URL or base64 payload
@@ -2301,11 +2326,13 @@ class CloudEdgeClient:
                             img_url = self._resolve_full_url(image_url)
                             img_resp = self._session.get(img_url, timeout=DEFAULT_TIMEOUT)
                             if img_resp.status_code == 200:
+                                self._log(f"Downloaded image from URL returned by endpoint {endpoint}: {img_url}")
                                 content = img_resp.content
                                 # Decrypt if necessary
                                 if self._is_encrypted_image(image_url):
                                     content = self.decrypt_alarm_image(content, device_serial, image_url)
                                 if content and content[:2] in (b'\xff\xd8', b'\x89PN'):
+                                    self._log(f"Got image from {endpoint} -> {img_url}")
                                     return content
                         except requests.exceptions.RequestException:
                             # Ignore connection errors to image URL, continue to next endpoint
@@ -2443,6 +2470,7 @@ class CloudEdgeClient:
                                 # Attempt to decrypt assuming cloud-style encryption
                                 decrypted = self.decrypt_alarm_image(content, device_serial, url)
                                 if decrypted and (decrypted[:2] == b'\xff\xd8' or decrypted[:4] == b'\x89PNG'):
+                                    self._log(f"OpenAPI file endpoint {url} returned decrypted image (via {path})")
                                     return decrypted
                             except Exception:
                                 pass
@@ -2471,6 +2499,7 @@ class CloudEdgeClient:
                                                 content = self.decrypt_alarm_image(content, device_serial, val)
                                             except Exception:
                                                 pass
+                                        self._log(f"OpenAPI file endpoint {url} returned image via URL: {full_val} (via {path})")
                                         return content
                                 except requests.exceptions.RequestException:
                                     pass

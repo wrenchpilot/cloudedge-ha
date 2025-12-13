@@ -178,6 +178,11 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         We prioritize alarm event thumbnails from the cloud API, which are the most reliable source.
         """
         _LOGGER.debug("Camera image requested for %s", self._attr_name)
+        # Log key device fields to aid debugging when snapshots don't load
+        _LOGGER.debug("Device info: serial=%s id=%s ip=%s host_key=%s iot_type=%s cloud_support=%s thumbnail=%s", 
+                  self._serial_number, device_data.get('device_id'), device_data.get('device_ip'), 
+                  device_data.get('host_key'), device_data.get('iot_type') or device_data.get('iotType'), 
+                  device_data.get('cloud_support'), device_data.get('thumbnail_url'))
 
         device_data = self.coordinator.data.get(self._serial_number)
         if not device_data:
@@ -363,7 +368,24 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             _LOGGER.debug("No wake result for %s, cannot attempt cloud-mediated P2P", self._attr_name)
             return None
 
-        connect_params = wake_result.get('connect_string') or wake_result.get('connect_string_raw')
+        # Extract and log connect params (masking secrets)
+        connect_params = wake_result.get('connect_string') or None
+        if not connect_params and wake_result.get('connect_string_raw'):
+            try:
+                import json
+                connect_params = json.loads(wake_result.get('connect_string_raw'))
+            except Exception:
+                connect_params = None
+        if self.coordinator.client.debug:
+            try:
+                masked = dict(connect_params) if isinstance(connect_params, dict) else {}
+                # Mask password/keys
+                for k in ('password', 'pwd', 'passwd', 'accesskey'):
+                    if k in masked:
+                        masked[k] = '***'
+                _LOGGER.debug("Wake connect_params: %s", masked)
+            except Exception:
+                _LOGGER.debug("Wake connect_params: <unparsable>")
         if isinstance(connect_params, str):
             try:
                 import json
