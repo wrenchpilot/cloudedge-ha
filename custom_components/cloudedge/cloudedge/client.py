@@ -2357,20 +2357,56 @@ class CloudEdgeClient:
         signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
         signature_encoded = quote(signature)
 
-        snapshot_endpoints = [
-            f"{self.BASE_URL}/v1/app/device/snapshot",
-            f"{self.BASE_URL}/v1/app/device/preview",
-            f"{self.BASE_URL}/app/device/snapshot.action",
-            f"{self.BASE_URL}/ppstrongs/getSnapshot.action",
-            f"{self.BASE_URL}/ppstrongs/getDeviceSnapshot.action",
+        # Build candidate snapshot endpoints using several known base domains.
+        # Some CloudEdge/Meari deployments expose snapshot endpoints on different hosts
+        # depending on region/account. Try a set of common variants to increase hit rate.
+        endpoint_paths = [
+            "/v1/app/device/snapshot",
+            "/v1/app/device/preview",
+            "/app/device/snapshot.action",
+            "/ppstrongs/getSnapshot.action",
+            "/ppstrongs/getDeviceSnapshot.action",
         ]
 
+        # Candidate base domains to try (in order of preference)
+        candidate_bases = [
+            self.BASE_URL,
+            # prefer explicit OPENAPI base if set (may differ across accounts)
+            (self.OPENAPI_BASE_URL or ""),
+        ]
+
+        # Add additional well-known domains used by the ecosystem as fallbacks
+        extra_bases = [
+            "https://openapi.mearicloud.com",
+            "https://openapi-us.mearicloud.com",
+            "https://openapi-usce.mearicloud.com",
+            "https://api.meari.com",
+            "https://api-us.meari.com",
+            "https://apis-eu-frankfurt.cloudedge360.com",
+            "https://apis.cloudedge360.com",
+        ]
+
+        # Merge extras, avoiding duplicates and empty values
+        for b in extra_bases:
+            if b and b not in candidate_bases:
+                candidate_bases.append(b)
+
+        # If login returned a custom openapi domain in IoT keys, prefer it early
         iot_keys = self.session_data.get('iotPlatformKeys', {})
         if iot_keys.get('openapidomain'):
             openapi_domain = iot_keys['openapidomain']
             if not openapi_domain.startswith('http'):
                 openapi_domain = f"https://{openapi_domain}"
-            snapshot_endpoints.insert(1, f"{openapi_domain}/v1/app/device/snapshot")
+            if openapi_domain not in candidate_bases:
+                candidate_bases.insert(1, openapi_domain)
+
+        # Construct the full list of snapshot endpoints to probe
+        snapshot_endpoints = []
+        for base in candidate_bases:
+            if not base:
+                continue
+            for path in endpoint_paths:
+                snapshot_endpoints.append(f"{base.rstrip('/')}{path}")
 
         headers = {
             "Accept-Language": "en-US,en;q=0.8",
