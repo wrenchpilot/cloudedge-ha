@@ -2219,7 +2219,14 @@ class CloudEdgeClient:
             try:
                 self._log(f"Trying snapshot endpoint: {endpoint}")
                 url = f"{endpoint}?{params_str}&signature={signature_encoded}"
-                response = self._make_request('GET', url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                # Use session.get directly to prevent _make_request from logging HTTPError
+                try:
+                    response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                except requests.exceptions.RequestException as e:
+                    if self.debug:
+                        self._log(f"Snapshot endpoint {endpoint} failed to connect: {e}")
+                    last_error = e
+                    continue
 
                 # Some endpoints return an image directly
                 content_type = response.headers.get('Content-Type', '')
@@ -2227,6 +2234,7 @@ class CloudEdgeClient:
                     return response.content
 
                 # If JSON, try to extract image URL or base64 payload
+                data = None
                 try:
                     data = response.json()
                 except Exception:
@@ -2244,9 +2252,9 @@ class CloudEdgeClient:
                                 break
 
                     if image_url:
-                        # Download image
+                        # Download image using session.get directly
                         try:
-                            img_resp = self._make_request('GET', image_url, timeout=DEFAULT_TIMEOUT)
+                            img_resp = self._session.get(image_url, timeout=DEFAULT_TIMEOUT)
                             if img_resp.status_code == 200:
                                 content = img_resp.content
                                 # Decrypt if necessary
@@ -2254,14 +2262,16 @@ class CloudEdgeClient:
                                     content = self.decrypt_alarm_image(content, device_serial, image_url)
                                 if content and content[:2] in (b'\xff\xd8', b'\x89PN'):
                                     return content
-                        except Exception:
+                        except requests.exceptions.RequestException:
+                            # Ignore connection errors to image URL, continue to next endpoint
                             pass
 
                 # Not successful - keep trying next endpoint
-            except requests.exceptions.RequestException as e:
-                last_error = e
+            except Exception as e:
+                # Catch-unexpected errors and continue
                 if self.debug:
-                    self._log(f"Snapshot endpoint {endpoint} failed: {e}")
+                    self._log(f"Snapshot endpoint {endpoint} unexpected error: {e}")
+                last_error = e
                 continue
 
         if last_error and self.debug:
