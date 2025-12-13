@@ -1645,6 +1645,25 @@ class CloudEdgeClient:
                 return device
                 
         return None
+
+    def _resolve_full_url(self, url: str) -> str:
+        """
+        Convert a possibly relative URL returned by API to a full absolute URL.
+        Tries openapi domain first, then BASE_URL as fallback.
+        """
+        if not url:
+            return url
+        if url.startswith('http'):
+            return url
+        # Try OpenAPI domain from iotPlatformKeys when available
+        iot_keys = self.session_data.get('iotPlatformKeys', {}) if self.session_data else {}
+        openapi_domain = (iot_keys.get('openapidomain') or iot_keys.get('platformdomain')) if iot_keys else None
+        if openapi_domain:
+            if not openapi_domain.startswith('http'):
+                openapi_domain = f"https://{openapi_domain}"
+            return f"{openapi_domain.rstrip('/')}/{url.lstrip('/')}"
+        # Fallback to BASE_URL
+        return f"{self.BASE_URL.rstrip('/')}/{url.lstrip('/')}"
         
     def set_device_parameter(self, device_name: str, parameter_name: str, 
                              value: Union[int, str, float]) -> bool:
@@ -2119,18 +2138,31 @@ class CloudEdgeClient:
 
         latest = events[0]
         image_url = latest.get('image_url')
-        if not image_url:
+        image_id = latest.get('image_id') or latest.get('imageId') or latest.get('picId')
+        if not image_url and not image_id:
             if self.debug:
                 self._log("Latest alarm event has no image URL")
             return None
 
-        if self.debug:
+        if not image_url and image_id:
+            if self.debug:
+                self._log(f"Attempting fetch of alarm image via numeric ID: {image_id}")
+            try:
+                img = self._get_image_by_id(str(image_id), device_serial, formatted_sn=None)
+                if img:
+                    return img
+            except Exception as e:
+                if self.debug:
+                    self._log(f"Failed to fetch alarm image by ID {image_id}: {e}")
+            # Fall through - if numeric ID failed, we may still try image_url if present
+        if self.debug and image_url:
             self._log(f"Fetching alarm image from: {image_url[:80]}...")
 
-        # Download image
+        # Download image (resolve relative URLs to absolute)
+        full_image_url = self._resolve_full_url(image_url) if image_url else image_url
         response = self._make_request(
             'GET',
-            image_url,
+            full_image_url,
             timeout=DEFAULT_TIMEOUT
         )
 
@@ -2156,6 +2188,18 @@ class CloudEdgeClient:
                 return response.content
 
         return image_data
+        # If image URL not provided but numeric image ID exists, try fetching by ID
+        if not image_url and image_id:
+            if self.debug:
+                self._log(f"Fetching alarm image by ID {image_id} for {device_serial}")
+            try:
+                img = self._get_image_by_id(str(image_id), device_serial, formatted_sn=None)
+                if img:
+                    return img
+            except Exception as e:
+                if self.debug:
+                    self._log(f"Failed to fetch alarm image by id {image_id}: {e}")
+        return None
 
     def get_device_snapshot(self, device_id: int, device_serial: str) -> Optional[bytes]:
 
@@ -2254,7 +2298,8 @@ class CloudEdgeClient:
                     if image_url:
                         # Download image using session.get directly
                         try:
-                            img_resp = self._session.get(image_url, timeout=DEFAULT_TIMEOUT)
+                            img_url = self._resolve_full_url(image_url)
+                            img_resp = self._session.get(img_url, timeout=DEFAULT_TIMEOUT)
                             if img_resp.status_code == 200:
                                 content = img_resp.content
                                 # Decrypt if necessary
@@ -2264,7 +2309,21 @@ class CloudEdgeClient:
                                     return content
                         except requests.exceptions.RequestException:
                             # Ignore connection errors to image URL, continue to next endpoint
-                            pass
+                                pass
+                    # If cloud returns numeric image ID (Cloud 2.0), try to fetch by ID
+                    if not image_url:
+                        # Try to find image_id fields
+                        image_id = None
+                        for id_key in ['image_id', 'imageId', 'picId', 'pic_id', 'fileId', 'file_id']:
+                            v = result.get(id_key) if isinstance(result, dict) else None
+                            if v:
+                                image_id = str(v)
+                                break
+                        if image_id:
+                            # Attempt to download via OpenAPI/file endpoints
+                            img_by_id = self._get_image_by_id(image_id, device_serial, formatted_sn=None)
+                            if img_by_id:
+                                return img_by_id
 
                 # Not successful - keep trying next endpoint
             except Exception as e:
@@ -2276,4 +2335,162 @@ class CloudEdgeClient:
 
         if last_error and self.debug:
             self._log(f"Snapshot requests failed on all endpoints: {last_error}")
+        return None
+
+    def _get_image_by_id(self, image_id: str, device_serial: str, formatted_sn: Optional[str] = None) -> Optional[bytes]:
+        """
+        Attempt to download an image referenced by a cloud image/file ID using the OpenAPI file endpoints.
+
+        This method will try several likely OpenAPI paths and query parameter names to
+        accommodate differences across CloudEdge/Meari server regions and API versions.
+        """
+        if not image_id:
+            return None
+
+        if not self.session_data:
+            raise AuthenticationError("Not authenticated - call authenticate() first")
+
+        iot_keys = self.session_data.get('iotPlatformKeys', {}) or {}
+        access_id = iot_keys.get('accessid')
+        access_key = iot_keys.get('accesskey')
+        openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
+        if not openapi_base:
+            openapi_base = self.OPENAPI_BASE_URL
+
+        # Format serial if not provided
+        if not formatted_sn and device_serial:
+            formatted_sn = self._format_sn(device_serial)
+
+        # Build candidate openapi file/download endpoints & parameters to try
+        # The exact endpoint and parameter name varies by server; try common variants
+        candidate_paths = [
+            ("/openapi/msg/alert/file", {"picId": image_id}),
+            ("/openapi/msg/alert/pic", {"picId": image_id}),
+            ("/openapi/file/get", {"fileId": image_id}),
+            ("/openapi/file/download", {"fileId": image_id}),
+            ("/openapi/device/file", {"fileId": image_id}),
+            ("/openapi/device/pic", {"picId": image_id}),
+        ]
+        # Try some v1 endpoints as well (non-openapi variants)
+        candidate_paths += [
+            ("/v1/app/msg/alert/file", {"picId": image_id}),
+            ("/v1/app/msg/alert/pic", {"picId": image_id}),
+            ("/v1/app/file/get", {"fileId": image_id}),
+            ("/v1/app/file/download", {"fileId": image_id}),
+        ]
+
+        headers = {
+            "Accept": "*/*",
+            "User-Agent": DEFAULT_HEADERS.get('User-Agent'),
+            "Accept-Language": "en-US,en;q=0.8",
+            "X-Ca-Key": CA_KEY,
+        }
+
+        last_err = None
+        for path, params in candidate_paths:
+            try:
+                # Build request differently depending on openapi vs v1 endpoints
+                if path.startswith('/openapi'):
+                    signature, expires = self._get_signature_for_openapi(path, 'get', access_key if access_key else "")
+                    query = {
+                        "accessid": access_id,
+                        "expires": expires,
+                        "signature": signature,
+                    }
+                    if formatted_sn:
+                        query['deviceid'] = formatted_sn
+                    query.update(params)
+                    url = f"{openapi_base}{path}"
+                    self._log(f"Trying openapi file endpoint: {url} (params {list(params.keys())})")
+                    resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT)
+                else:
+                    # v1 and other endpoints require xca headers and standard signature
+                    timestamp = self._generate_url_timestamp()
+                    nonce = int(time.time())
+                    base_params = {
+                        'appVer': '5.5.1',
+                        'appVerCode': '551',
+                        'deviceID': formatted_sn or '',
+                        'lngType': 'en',
+                        'phoneType': 'a',
+                        'signatureMethod': 'HMAC-SHA1',
+                        'signatureNonce': str(nonce),
+                        'signatureVersion': '1.0',
+                        'sourceApp': '8',
+                        'timestamp': timestamp,
+                        'userID': str(self.session_data.get('userID')),
+                        'userToken': self.session_data.get('userToken')
+                    }
+                    base_params.update(params)
+                    params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
+                    xca_headers = self._generate_xca_headers(params_str, self.session_data.get('userToken'))
+                    signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
+                    signature_encoded = quote(signature)
+                    url = f"{self.BASE_URL}{path}?{params_str}&signature={signature_encoded}"
+                    req_headers = headers.copy()
+                    req_headers.update(xca_headers)
+                    self._log(f"Trying v1 file endpoint: {url}")
+                    resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT)
+                if resp.status_code == 200:
+                    # If content-type is image, return raw
+                    ct = resp.headers.get('Content-Type', '')
+                    if ct and 'image' in ct:
+                        # If image appears encrypted (no JPEG header), try to decrypt using device serial
+                        content = resp.content
+                        # If it's not a JPEG/PNG, attempt to decrypt with device serial
+                        if (not content.startswith(b'\xff\xd8') and not content.startswith(b'\x89PN')):
+                            try:
+                                # Attempt to decrypt assuming cloud-style encryption
+                                decrypted = self.decrypt_alarm_image(content, device_serial, url)
+                                if decrypted and (decrypted[:2] == b'\xff\xd8' or decrypted[:4] == b'\x89PNG'):
+                                    return decrypted
+                            except Exception:
+                                pass
+                        return content
+                    # Some endpoints return JSON with result containing URL or base64
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = None
+
+                    if isinstance(data, dict):
+                        # Look for known fields
+                        result = data.get('result') or data
+                        # Direct URL
+                        for key in ('url', 'fileUrl', 'imgUrl', 'imageUrl', 'downloadUrl'):
+                            val = result.get(key)
+                            if val and isinstance(val, str) and val.startswith('http'):
+                                try:
+                                    full_val = self._resolve_full_url(val)
+                                    img = self._session.get(full_val, timeout=DEFAULT_TIMEOUT)
+                                    if img.status_code == 200 and 'image' in img.headers.get('Content-Type', ''):
+                                        content = img.content
+                                        # Decrypt if necessary
+                                        if self._is_encrypted_image(val):
+                                            try:
+                                                content = self.decrypt_alarm_image(content, device_serial, val)
+                                            except Exception:
+                                                pass
+                                        return content
+                                except requests.exceptions.RequestException:
+                                    pass
+                        # Some endpoints may return base64 file data
+                        if isinstance(result.get('file'), str) and result.get('file'):
+                            try:
+                                return base64.b64decode(result.get('file'))
+                            except Exception:
+                                pass
+                else:
+                    if self.debug:
+                        self._log(f"OpenAPI file endpoint {url} returned HTTP {resp.status_code}")
+                    last_err = resp
+                    continue
+            except Exception as e:
+                last_err = e
+                if self.debug:
+                    self._log(f"Error during openapi file request: {e}")
+                continue
+
+        if last_err and self.debug:
+            self._log(f"All openapi file endpoints failed for id {image_id}: {last_err}")
         return None

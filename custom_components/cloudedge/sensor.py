@@ -180,7 +180,7 @@ class CloudEdgeConfigSensor(CloudEdgeBaseSensor):
         super().__init__(coordinator, serial_number, device_info)
         self._param_name = param_name
         self._param_key = param_key
-        self._attr_unique_id = f"{DOMAIN}_{serial_number}_{param_name}"
+        self._attr_unique_id = f"{DOMAIN}_{serial_number}_{param_key}"
         self._attr_name = param_name.replace("_", " ").title()
         
         # Enable by default if in the enabled list
@@ -266,7 +266,7 @@ class CloudEdgeGenericSensor(CloudEdgeBaseSensor):
         self._param_name = param_name
         self._param_key = param_key
         self._param_info = param_info
-        self._attr_unique_id = f"{DOMAIN}_{serial_number}_{param_name}"
+        self._attr_unique_id = f"{DOMAIN}_{serial_number}_{param_key}"
         
         # Enable by default for important parameters
         self._attr_entity_registry_enabled_default = param_key in ENABLED_BY_DEFAULT_SENSOR_PARAMS
