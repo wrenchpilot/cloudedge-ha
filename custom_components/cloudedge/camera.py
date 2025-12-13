@@ -323,8 +323,10 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             )
 
         
-        # For non-cloud-only cameras, try P2P if we have an IP
+        # Attempt P2P snapshot (direct LAN or cloud-mediated wake) if we have a device ID
+        p2p_tried = False
         if device_id and device_ip:
+            p2p_tried = True
             _LOGGER.debug("Attempting P2P snapshot for %s (ID: %s, IP: %s)", 
                          self._attr_name, device_id, device_ip)
             try:
@@ -336,6 +338,18 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
                         return p2p_snapshot
             except Exception as e:
                 _LOGGER.debug("P2P snapshot failed for %s: %s", self._attr_name, e)
+
+        # If we haven't yet tried P2P (no LAN IP), attempt cloud-mediated P2P via wake/connect
+        if device_id and not p2p_tried:
+            try:
+                _LOGGER.debug("Attempting cloud-mediated P2P snapshot for %s (ID: %s)", self._attr_name, device_id)
+                p2p_snapshot = await self._get_p2p_snapshot(device_id, device_ip, device_data)
+                if p2p_snapshot and len(p2p_snapshot) > 100:
+                    if p2p_snapshot[:2] == b'\xff\xd8' or p2p_snapshot[:4] == b'\x89PNG':
+                        _LOGGER.debug("Got valid cloud-mediated P2P snapshot (%d bytes) for %s", len(p2p_snapshot), self._attr_name)
+                        return p2p_snapshot
+            except Exception as e:
+                _LOGGER.debug("Cloud-mediated P2P snapshot failed for %s: %s", self._attr_name, e)
 
         _LOGGER.debug("No snapshot available for %s - all methods exhausted", self._attr_name)
         return None
@@ -356,17 +370,67 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         Returns:
             JPEG image bytes if successful, None otherwise.
         """
-        # Quick connectivity check - if camera doesn't respond to UDP probe, skip P2P
-        if not await self._check_p2p_reachable(device_ip):
-            _LOGGER.debug("Camera %s not reachable via P2P protocol, skipping", device_ip)
-            return None
+        # Quick connectivity check - if camera responds to UDP probe, prefer direct P2P
+        p2p_reachable = await self._check_p2p_reachable(device_ip)
         
         try:
-            # Try aiopppp library for direct P2P connection
-            return await self._capture_via_aiopppp(device_ip, {}, device_data)
-            
+            # If direct P2P reachable, try aiopppp library for direct P2P connection
+            if p2p_reachable:
+                p2p_snapshot = await self._capture_via_aiopppp(device_ip, {}, device_data)
+                if p2p_snapshot:
+                    return p2p_snapshot
         except Exception as e:
             _LOGGER.debug("P2P snapshot error for %s: %s", self._attr_name, e)
+
+        # If direct P2P failed or not reachable, try cloud-mediated P2P via wake_device
+        try:
+            wake_result = await self.hass.async_add_executor_job(
+                self.coordinator.client.wake_device,
+                device_id,
+            )
+        except Exception as e:
+            _LOGGER.debug("Wake device call failed for %s: %s", self._attr_name, e)
+            wake_result = None
+
+        if not wake_result:
+            _LOGGER.debug("No wake result for %s, cannot attempt cloud-mediated P2P", self._attr_name)
+            return None
+
+        connect_params = wake_result.get('connect_string') or wake_result.get('connect_string_raw')
+        if isinstance(connect_params, str):
+            try:
+                import json
+                connect_params = json.loads(connect_params)
+            except Exception:
+                connect_params = None
+
+        if not connect_params:
+            _LOGGER.debug("Wake result did not include connect_string for %s", self._attr_name)
+            return None
+
+        # Create a P2P client from connect params and attempt to capture snapshot via relay
+        try:
+            from .tools.cloudedge_p2p_client import CloudEdgeP2PClient
+
+            # Instantiate client using parsed connect params
+            p2p_client = CloudEdgeP2PClient.from_connect_string(connect_params, camera_ip=device_ip, debug=self.coordinator.client.debug)
+
+            # Connect (this is blocking) via executor
+            connected = await self.hass.async_add_executor_job(p2p_client.connect_after_wake, 15.0)
+            if not connected:
+                _LOGGER.debug("Cloud P2P client failed to connect for %s", self._attr_name)
+                p2p_client.close()
+                return None
+
+            # Request snapshot synchronously via executor
+            snapshot = await self.hass.async_add_executor_job(p2p_client.request_snapshot)
+            p2p_client.close()
+
+            if snapshot and len(snapshot) > 100:
+                return snapshot
+            return None
+        except Exception as e:
+            _LOGGER.debug("Cloud-mediated P2P snapshot failed for %s: %s", self._attr_name, e)
             return None
 
     async def _check_p2p_reachable(self, device_ip: str, timeout: float = 2.0) -> bool:
