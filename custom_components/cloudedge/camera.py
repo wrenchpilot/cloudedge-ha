@@ -178,13 +178,19 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         We prioritize alarm event thumbnails from the cloud API, which are the most reliable source.
         """
         _LOGGER.debug("Camera image requested for %s", self._attr_name)
-        # Log key device fields to aid debugging when snapshots don't load
-        _LOGGER.debug("Device info: serial=%s id=%s ip=%s host_key=%s iot_type=%s cloud_support=%s thumbnail=%s", 
-                  self._serial_number, device_data.get('device_id'), device_data.get('device_ip'), 
-                  device_data.get('host_key'), device_data.get('iot_type') or device_data.get('iotType'), 
-                  device_data.get('cloud_support'), device_data.get('thumbnail_url'))
-
         device_data = self.coordinator.data.get(self._serial_number)
+        # Log key device fields to aid debugging when snapshots don't load
+        if device_data:
+            _LOGGER.debug(
+                "Device info: serial=%s id=%s ip=%s host_key=%s iot_type=%s cloud_support=%s thumbnail=%s",
+                self._serial_number,
+                device_data.get('device_id'),
+                device_data.get('device_ip'),
+                device_data.get('host_key'),
+                device_data.get('iot_type') or device_data.get('iotType'),
+                device_data.get('cloud_support'),
+                device_data.get('thumbnail_url'),
+            )
         if not device_data:
             _LOGGER.debug("No device data for %s", self._attr_name)
             return None
