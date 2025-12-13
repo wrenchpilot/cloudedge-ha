@@ -41,31 +41,38 @@ def test_alarm_endpoints(client: CloudEdgeClient, device_id: int, device_serial:
         print(f"Access ID: {'***' if iot_keys.get('accessid') else 'NOT SET'}")
         print()
     
-    # Test the main method
-    print("Testing get_alarm_events()...")
-    print("(This will try multiple endpoints and report results)\n")
+    # Test the main method - try today and past 7 days
+    print("Testing get_alarm_events() for past 7 days...")
+    print("(This will try multiple dates to find any events)\n")
     
-    try:
-        events = client.get_alarm_events(device_id, limit=5)
-        if events:
-            print(f"\n✓ SUCCESS! Found {len(events)} alarm events!\n")
-            for i, event in enumerate(events):
-                print(f"  Event {i+1}:")
-                print(f"    ID: {event.get('event_id')}")
-                print(f"    Type: {event.get('event_type')}")
-                print(f"    Time: {event.get('event_time')}")
-                img_url = event.get('image_url', 'N/A')
-                print(f"    Image URL: {img_url[:100]}..." if len(str(img_url)) > 100 else f"    Image URL: {img_url}")
-                print(f"    Encrypted: {event.get('is_encrypted')}")
-        else:
-            print("✗ No alarm events returned (API may have worked but no events available)")
-            print("  This could mean:")
-            print("    - No motion/alarm events have occurred recently")
-            print("    - The endpoint worked but returned empty list")
-            print("    - All endpoint attempts failed (check debug output above)")
-    except Exception as e:
-        print(f"✗ get_alarm_events() failed: {e}")
-        traceback.print_exc()
+    events_found = False
+    for days_ago in range(8):  # Today + past 7 days
+        test_date = (datetime.datetime.now() - datetime.timedelta(days=days_ago)).strftime('%Y%m%d')
+        try:
+            events = client.get_alarm_events(device_id, day=test_date, limit=5)
+            if events:
+                print(f"\n✓ SUCCESS! Found {len(events)} alarm events on {test_date}!\n")
+                events_found = True
+                for i, event in enumerate(events):
+                    print(f"  Event {i+1}:")
+                    print(f"    ID: {event.get('event_id')}")
+                    print(f"    Type: {event.get('event_type')}")
+                    print(f"    Time: {event.get('event_time')}")
+                    img_url = event.get('image_url', 'N/A')
+                    print(f"    Image URL: {img_url[:100]}..." if len(str(img_url)) > 100 else f"    Image URL: {img_url}")
+                    print(f"    Encrypted: {event.get('is_encrypted')}")
+                break  # Found events, stop searching
+            else:
+                print(f"  {test_date}: No events")
+        except Exception as e:
+            print(f"  {test_date}: Error - {e}")
+    
+    if not events_found:
+        print("\n✗ No alarm events found in the past 7 days")
+        print("  This could mean:")
+        print("    - No motion/alarm events have occurred recently")
+        print("    - Motion detection may be disabled on the camera")
+        print("    - Check the CloudEdge app to confirm events exist")
     
     # Test latest alarm image
     print("\n" + "-"*60)
