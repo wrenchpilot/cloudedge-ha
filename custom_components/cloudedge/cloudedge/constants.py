@@ -63,3 +63,25 @@ PING_TIMEOUT = 2.0
 
 # Cache settings
 DEFAULT_CACHE_FILE = ".cloudedge_session_cache"
+
+# API Endpoints
+API_ENDPOINTS = {
+    # Authentication
+    "AUTH_LOGIN": "/meari/app/login",
+    
+    # Device Management
+    "DEVICE_LIST": "/ppstrongs/getDevice.action",
+    "DEVICE_STATUS": "/ppstrongs/getDeviceOnLine.action",
+    "DEVICE_WAKE": "/ppstrongs/removeWake.action",
+    
+    # Home/Room Management (v1 API)
+    "HOME_LIST": "/v1/app/home/list",
+    "HOME_DEVICE_LIST": "/v1/app/home/join/device/list",
+    "DEVICE_WAKE_V1": "/v1/app/device/wake",
+    
+    # Alarm/Event Management
+    "ALERT_LIST": "/v1/app/msg/alert/list",
+    
+    # OpenAPI Endpoints (device config)
+    "OPENAPI_DEVICE_CONFIG": "/openapi/device/config",
+}

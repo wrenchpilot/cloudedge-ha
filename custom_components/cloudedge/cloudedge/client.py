@@ -612,8 +612,9 @@ class CloudEdgeClient:
         # Encrypt credentials
         timestamp = int(time.time() * 1000)
         try:
+            from .constants import API_ENDPOINTS
             encrypted_username = self._aes_encode_param(
-                self.username, "/meari/app/login", timestamp=timestamp
+                self.username, API_ENDPOINTS["AUTH_LOGIN"], timestamp=timestamp
             )
             encrypted_password = self._des_encode(self.password)
         except Exception as e:
@@ -663,8 +664,9 @@ class CloudEdgeClient:
         }
         
         try:
+            from .constants import API_ENDPOINTS
             response = self._session.post(
-                f"{self.BASE_URL}/meari/app/login", 
+                f"{self.BASE_URL}{API_ENDPOINTS['AUTH_LOGIN']}", 
                 headers=headers, 
                 data=login_data,
                 timeout=30
@@ -830,9 +832,10 @@ class CloudEdgeClient:
         headers.update(xca_headers)
         
         # Use the simple signature with userToken
+        from .constants import API_ENDPOINTS
         signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
         signature_encoded = quote(signature)
-        url = f"{self.BASE_URL}/v1/app/home/list?{params_str}&signature={signature_encoded}"
+        url = f"{self.BASE_URL}{API_ENDPOINTS['HOME_LIST']}?{params_str}&signature={signature_encoded}"
         
         try:
             response = self._make_request('GET', url, headers=headers, timeout=DEFAULT_TIMEOUT)
@@ -870,8 +873,9 @@ class CloudEdgeClient:
         except requests.exceptions.RequestException as e:
             # Fallback to EU endpoint if request failed
             try:
+                from .constants import API_ENDPOINTS
                 eu_urls = get_urls_for_region(TYPE_REGION_EU)
-                eu_url = f"{eu_urls['BASE_URL']}/v1/app/home/list?{params_str}&signature={signature_encoded}"
+                eu_url = f"{eu_urls['BASE_URL']}{API_ENDPOINTS['HOME_LIST']}?{params_str}&signature={signature_encoded}"
                 self._log(f"Home list request failed on {self.BASE_URL}: {e}; retrying on EU URL")
                 response = self._make_request('GET', eu_url, headers=headers, timeout=DEFAULT_TIMEOUT)
                 response_data = response.json()
@@ -937,9 +941,10 @@ class CloudEdgeClient:
         headers.update(xca_headers)
         
         # Use the simple signature with userToken
+        from .constants import API_ENDPOINTS
         signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
         signature_encoded = quote(signature)
-        url = f"{self.BASE_URL}/v1/app/home/join/device/list?{params_str}&signature={signature_encoded}"
+        url = f"{self.BASE_URL}{API_ENDPOINTS['HOME_DEVICE_LIST']}?{params_str}&signature={signature_encoded}"
         
         def _parse_devices(response_data: Dict) -> List[Dict]:
             """Parse devices from response data."""
@@ -1027,8 +1032,9 @@ class CloudEdgeClient:
         except requests.exceptions.RequestException as e:
             # Fallback to EU endpoint if request failed
             try:
+                from .constants import API_ENDPOINTS
                 eu_urls = get_urls_for_region(TYPE_REGION_EU)
-                eu_url = f"{eu_urls['BASE_URL']}/v1/app/home/join/device/list?{params_str}&signature={signature_encoded}"
+                eu_url = f"{eu_urls['BASE_URL']}{API_ENDPOINTS['HOME_DEVICE_LIST']}?{params_str}&signature={signature_encoded}"
                 self._log(f"Home device list request failed on {self.BASE_URL}: {e}; retrying on EU URL")
                 response = self._make_request('GET', eu_url, headers=headers, timeout=DEFAULT_TIMEOUT)
                 response_data = response.json()
@@ -1126,9 +1132,10 @@ class CloudEdgeClient:
         }
         
         try:
+            from .constants import API_ENDPOINTS
             response = self._make_request(
                 'POST',
-                f"{self.BASE_URL}/ppstrongs/getDevice.action",
+                f"{self.BASE_URL}{API_ENDPOINTS['DEVICE_LIST']}",
                 headers=headers, 
                 data=device_body,
                 timeout=DEFAULT_TIMEOUT
@@ -1274,9 +1281,10 @@ class CloudEdgeClient:
         }
         
         try:
+            from .constants import API_ENDPOINTS
             response = self._make_request(
                 'POST',
-                f"{self.BASE_URL}/ppstrongs/getDeviceOnLine.action",
+                f"{self.BASE_URL}{API_ENDPOINTS['DEVICE_STATUS']}",
                 headers=headers, 
                 data=device_body,
                 timeout=DEFAULT_TIMEOUT
@@ -1375,9 +1383,10 @@ class CloudEdgeClient:
         }
         
         # Try multiple potential wake endpoints - the endpoint varies by region/server
+        from .constants import API_ENDPOINTS
         wake_endpoints = [
-            f"{self.BASE_URL}/ppstrongs/removeWake.action",
-            f"{self.BASE_URL}/v1/app/device/wake",
+            f"{self.BASE_URL}{API_ENDPOINTS['DEVICE_WAKE']}",
+            f"{self.BASE_URL}{API_ENDPOINTS['DEVICE_WAKE_V1']}",
             f"{self.BASE_URL}/app/device/wake.action",
         ]
         
@@ -1387,7 +1396,7 @@ class CloudEdgeClient:
             openapi_domain = iot_keys['openapidomain']
             if not openapi_domain.startswith('http'):
                 openapi_domain = f"https://{openapi_domain}"
-            wake_endpoints.insert(1, f"{openapi_domain}/v1/app/device/wake")
+            wake_endpoints.insert(1, f"{openapi_domain}{API_ENDPOINTS['DEVICE_WAKE_V1']}")
         
         last_error = None
         # Try a cached endpoint first (per-account/device) to avoid probing
@@ -1543,7 +1552,8 @@ class CloudEdgeClient:
         openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
         
         # Generate signature for OpenAPI
-        signature, timeout = self._get_signature_for_openapi('/openapi/device/config', 'get', access_key)
+        from .constants import API_ENDPOINTS
+        signature, timeout = self._get_signature_for_openapi(API_ENDPOINTS['OPENAPI_DEVICE_CONFIG'], 'get', access_key)
         
         # Format device SN
         formatted_sn = self._format_sn(device_serial)
@@ -1577,9 +1587,10 @@ class CloudEdgeClient:
         }
         
         try:
+            from .constants import API_ENDPOINTS
             response = self._make_request(
                 'GET',
-                f"{openapi_base}/openapi/device/config",
+                f"{openapi_base}{API_ENDPOINTS['OPENAPI_DEVICE_CONFIG']}",
                 headers=headers, 
                 params=params, 
                 timeout=DEFAULT_TIMEOUT
@@ -1630,7 +1641,8 @@ class CloudEdgeClient:
         openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
         
         # Generate signature for OpenAPI
-        signature, timeout = self._get_signature_for_openapi('/openapi/device/config', 'set', access_key)
+        from .constants import API_ENDPOINTS
+        signature, timeout = self._get_signature_for_openapi(API_ENDPOINTS['OPENAPI_DEVICE_CONFIG'], 'set', access_key)
         
         # Format device SN
         formatted_sn = self._format_sn(device_serial)
@@ -1664,9 +1676,10 @@ class CloudEdgeClient:
         }
         
         try:
+            from .constants import API_ENDPOINTS
             response = self._make_request(
                 'GET',
-                f"{openapi_base}/openapi/device/config",
+                f"{openapi_base}{API_ENDPOINTS['OPENAPI_DEVICE_CONFIG']}",
                 headers=headers, 
                 params=params, 
                 timeout=DEFAULT_TIMEOUT
@@ -2019,7 +2032,8 @@ class CloudEdgeClient:
         # - 1001: Success with events
         # - 1003: No permission (no cloud subscription) 
         # - 1023: Invalid parameters or no events
-        endpoint = '/v1/app/msg/alert/list'
+        from .constants import API_ENDPOINTS
+        endpoint = API_ENDPOINTS['ALERT_LIST']
         url = f"{self.BASE_URL}{endpoint}?{params_str}&signature={signature_encoded}"
         
         try:

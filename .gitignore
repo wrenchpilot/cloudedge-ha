@@ -54,3 +54,6 @@ htmlcov/
 cloudedge_session_cache
 .cloudedge_session_cache
 .env
+
+*.pcapng
+*.csv

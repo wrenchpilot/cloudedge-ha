@@ -161,29 +161,57 @@ class CloudEdgeClient:
                 raise Exception(f"Auth failed: {error_msg} (Code: {error_code})")
                 
         def get_devices(self):
-            """Get device list."""
+            """Get device list using correct endpoint."""
             if not self.session_data:
                 raise Exception("Not authenticated")
                 
             device_body = self._generate_device_body()
             
             headers = {
+                "Accept": "*/*",
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
+                "Accept-Encoding": "gzip, deflate, br",
+                "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+                "Accept-Language": "en-US,en;q=1"
             }
             
+            url = f"{self.BASE_URL}/ppstrongs/getDevice.action"
+            self._log(f"Getting devices from {url}")
+            
             response = self.session.post(
-                f"{self.BASE_URL}/ppstrongs/getDeviceList.action",
+                url,
                 headers=headers,
                 data=device_body,
                 timeout=self.DEFAULT_TIMEOUT
             )
+            
+            self._log(f"Device list status: {response.status_code}")
+            if response.status_code != 200:
+                self._log(f"Response text: {response.text[:500]}")
+            
             data = response.json()
+            self._log(f"Device response code: {data.get('resultCode')}")
             
             if data.get("resultCode") == "1001":
-                return data.get("result", [])
+                # Parse devices from different possible keys
+                devices = []
+                device_types = ['nvr', 'ipc', 'chime', 'doorbell', 'snap']
+                for device_type in device_types:
+                    if device_type in data and data[device_type]:
+                        device_list = data[device_type]
+                        if isinstance(device_list, list):
+                            devices.extend(device_list)
+                
+                # Also check result.deviceList
+                if not devices:
+                    result_devices = data.get("result", {}).get("deviceList", [])
+                    if isinstance(result_devices, list):
+                        devices.extend(result_devices)
+                
+                self._log(f"Found {len(devices)} devices")
+                return devices
             else:
-                raise Exception(f"Get devices failed: {data.get('resultMsg')}")
+                raise Exception(f"Get devices failed: {data.get('resultMsg', 'Unknown error')}")
                 
         def wake_device(self, device_id):
             """Wake device and get P2P connection parameters."""
@@ -199,42 +227,91 @@ class CloudEdgeClient:
                 "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
             }
             
-            response = self.session.post(
+            # Try multiple wake endpoints - varies by region/account
+            wake_endpoints = [
                 f"{self.BASE_URL}/ppstrongs/removeWake.action",
-                headers=headers,
-                data=device_body,
-                timeout=self.DEFAULT_TIMEOUT
-            )
-            data = response.json()
+                f"{self.BASE_URL}/v1/app/device/wake",
+                f"{self.BASE_URL}/app/device/wake.action",
+            ]
             
-            self._log(f"Wake response: {json.dumps(data, indent=2)}")
+            # Also try OpenAPI endpoint if available
+            iot_keys = self.session_data.get('iotPlatformKeys', {})
+            if iot_keys.get('openapidomain'):
+                openapi_domain = iot_keys['openapidomain']
+                if not openapi_domain.startswith('http'):
+                    openapi_domain = f"https://{openapi_domain}"
+                wake_endpoints.insert(1, f"{openapi_domain}/v1/app/device/wake")
             
-            if data.get("resultCode") == "1001":
-                result = data.get("result", {})
-                connect_string_raw = result.get("getConnectString", "")
-                
-                if connect_string_raw:
-                    try:
-                        connect_params = json.loads(connect_string_raw)
-                        return {
-                            'success': True,
-                            'connect_string': connect_params,
-                            'raw_result': result
-                        }
-                    except json.JSONDecodeError:
-                        return {
-                            'success': True,
-                            'connect_string_raw': connect_string_raw,
-                            'raw_result': result
-                        }
-                else:
-                    return {
-                        'success': True,
-                        'connect_string': None,
-                        'raw_result': result
-                    }
+            last_error = None
+            for endpoint in wake_endpoints:
+                try:
+                    self._log(f"Trying wake endpoint: {endpoint}")
+                    response = self.session.post(
+                        endpoint,
+                        headers=headers,
+                        data=device_body,
+                        timeout=self.DEFAULT_TIMEOUT
+                    )
+                    
+                    # Skip 404s and try next endpoint
+                    if response.status_code == 404:
+                        self._log(f"  -> 404 Not Found, trying next endpoint")
+                        continue
+                    
+                    data = response.json()
+                    self._log(f"Wake response: {json.dumps(data, indent=2)}")
+                    
+                    if data.get("resultCode") == "1001":
+                        result = data.get("result", {}) or data.get("resultData", {})
+                        connect_string_raw = result.get("getConnectString", "")
+                        
+                        if connect_string_raw:
+                            try:
+                                connect_params = json.loads(connect_string_raw)
+                                self._log(f"✅ Wake successful with endpoint: {endpoint}")
+                                return {
+                                    'success': True,
+                                    'endpoint_used': endpoint,
+                                    'connect_string': connect_params,
+                                    'raw_result': result
+                                }
+                            except json.JSONDecodeError:
+                                self._log(f"✅ Wake successful but connect string parse failed")
+                                return {
+                                    'success': True,
+                                    'endpoint_used': endpoint,
+                                    'connect_string_raw': connect_string_raw,
+                                    'raw_result': result
+                                }
+                        else:
+                            self._log(f"✅ Wake successful but no connect string returned")
+                            return {
+                                'success': True,
+                                'endpoint_used': endpoint,
+                                'connect_string': None,
+                                'raw_result': result
+                            }
+                    elif data.get("resultCode") not in [None, "1003", "1023"]:
+                        # Got real error response
+                        error_msg = data.get('resultMsg', 'Unknown error')
+                        error_code = data.get('resultCode', 'unknown')
+                        self._log(f"  -> Error {error_code}: {error_msg}")
+                        last_error = f"{error_code} - {error_msg}"
+                        continue
+                    else:
+                        self._log(f"  -> Endpoint not supported, trying next")
+                        continue
+                        
+                except Exception as e:
+                    self._log(f"  -> Exception: {e}")
+                    last_error = str(e)
+                    continue
+            
+            # All endpoints failed
+            if last_error:
+                raise Exception(f"All wake endpoints failed. Last error: {last_error}")
             else:
-                raise Exception(f"Wake failed: {data.get('resultMsg')}")
+                raise Exception("All wake endpoints returned 404 or unsupported")
                 
         def _generate_device_body(self, extra_params=None):
             """Generate device request body."""
@@ -290,7 +367,13 @@ def main():
             device_id = device.get('deviceID', 'unknown')
             device_name = device.get('deviceName', 'Unknown')
             device_sn = device.get('snNum') or device.get('deviceUUID', 'unknown')
-            print(f"   [{i+1}] {device_name} (ID: {device_id}, SN: {device_sn})")
+            iot_type = device.get('iotType')
+            aws_cloud_compat = device.get('awsCloudCompat', 0)
+            cloud_support = device.get('cloudSupport', 0)
+            is_cloud_only = (iot_type == 3 and aws_cloud_compat == 1)
+            status_indicator = "☁️ CLOUD-ONLY" if is_cloud_only else "📡 P2P"
+            subscription_indicator = "✅ SUB" if cloud_support == 1 else "❌ NO-SUB"
+            print(f"   [{i+1}] {device_name} (ID: {device_id}, SN: {device_sn}) - {status_indicator}, {subscription_indicator}")
         
         # Select device to wake
         if args.device_id:
@@ -298,9 +381,53 @@ def main():
         else:
             # Use first device
             target_device = devices[0].get('deviceID')
+        
+        # Check if device is cloud-only BEFORE attempting wake
+        selected_device = next((d for d in devices if str(d.get('deviceID')) == str(target_device)), None)
+        if selected_device:
+            iot_type = selected_device.get('iotType')
+            aws_cloud_compat = selected_device.get('awsCloudCompat', 0)
+            cloud_support = selected_device.get('cloudSupport', 0)
+            is_cloud_only = (iot_type == 3 and aws_cloud_compat == 1)
+            
+            if is_cloud_only:
+                print(f"\n⚠️  CLOUD-ONLY CAMERA DETECTED!")
+                print("=" * 60)
+                print(f"   Device Type: AWS IoT-based (iotType={iot_type}, awsCloudCompat={aws_cloud_compat})")
+                print(f"   Cloud Subscription: {'ACTIVE' if cloud_support == 1 else 'INACTIVE (cloudSupport=0)'}")
+                print("")
+                print("📋 IMPORTANT INFORMATION:")
+                print("-" * 60)
+                print("   This camera uses AWS IoT for device communication (MQTT).")
+                print("   Traditional wake APIs (removeWake.action) are NOT supported.")
+                print("   Direct P2P connections (PPPP protocol) are NOT supported.")
+                print("")
+                
+                if cloud_support == 0:
+                    print("❌ CRITICAL LIMITATION:")
+                    print("   Without cloud subscription (cloudSupport=0), this camera has")
+                    print("   NO remote control capabilities through CloudEdge APIs:")
+                    print("   • Cannot wake device")
+                    print("   • Cannot capture snapshots")
+                    print("   • Cannot access alarm events")
+                    print("   • Cannot stream video")
+                    print("")
+                    print("💡 YOUR OPTIONS:")
+                    print("   1. Subscribe to CloudEdge cloud storage ($$$)")
+                    print("   2. Replace camera with ONVIF/RTSP model")
+                    print("   3. Use camera only through vendor mobile app")
+                    print("")
+                    print("=" * 60)
+                    return 1
+                else:
+                    print("✅ Cloud subscription is active - cloud APIs may work")
+                    print("   However, wake API still won't work (AWS IoT uses MQTT)")
+                    print("")
             
         print(f"\n[3/3] Waking device {target_device}...")
-        
+        print("(This will likely fail for cloud-only cameras)" if is_cloud_only else "")
+        print("")
+            
     except Exception as e:
         print(f"❌ Failed to get devices: {e}")
         return 1
