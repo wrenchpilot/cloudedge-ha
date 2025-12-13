@@ -2467,6 +2467,12 @@ class CloudEdgeClient:
                 # Use session.get directly to prevent _make_request from logging HTTPError
                 try:
                     response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
+                except requests.exceptions.SSLError as e:
+                    # TLS verification failed (certificate/hostname mismatch). Provide concise guidance.
+                    self._log(f"SSL verification failed for snapshot endpoint {endpoint}: {str(e).split(':')[-1].strip()}")
+                    self._log("If you are debugging, you can set probe_allow_insecure=True when creating the client to bypass TLS verification (INSECURE - only for debugging).")
+                    last_error = e
+                    continue
                 except requests.exceptions.RequestException as e:
                     if self.debug:
                         self._log(f"Snapshot endpoint {endpoint} failed to connect: {e}")
@@ -2504,6 +2510,10 @@ class CloudEdgeClient:
                     except Exception:
                         # not JSON, continue to next endpoint
                         pass
+                except requests.exceptions.SSLError as e:
+                    # TLS verification failed on POST attempt
+                    self._log(f"SSL verification failed for snapshot endpoint POST {endpoint}: {str(e).split(':')[-1].strip()}")
+                    self._log("If debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
                 except requests.exceptions.RequestException as e:
                     if self.debug:
                         self._log(f"Snapshot endpoint POST {endpoint} failed: {e}")
@@ -2649,7 +2659,18 @@ class CloudEdgeClient:
                     query.update(params)
                     url = f"{openapi_base}{path}"
                     self._log(f"Trying openapi file endpoint: {url} (params {list(params.keys())})")
-                    resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
+                    try:
+                        resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
+                    except requests.exceptions.SSLError as e:
+                        self._log(f"SSL verification failed for openapi file endpoint {url}: {str(e).split(':')[-1].strip()}")
+                        self._log("If you are debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
+                        last_err = e
+                        continue
+                    except requests.exceptions.RequestException as e:
+                        last_err = e
+                        if self.debug:
+                            self._log(f"OpenAPI file endpoint {url} request failed: {e}")
+                        continue
                 else:
                     # v1 and other endpoints require xca headers and standard signature
                     timestamp = self._generate_url_timestamp()
@@ -2677,7 +2698,18 @@ class CloudEdgeClient:
                     req_headers = headers.copy()
                     req_headers.update(xca_headers)
                     self._log(f"Trying v1 file endpoint: {url}")
-                    resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
+                    try:
+                        resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
+                    except requests.exceptions.SSLError as e:
+                        self._log(f"SSL verification failed for v1 file endpoint {url}: {str(e).split(':')[-1].strip()}")
+                        self._log("If you are debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
+                        last_err = e
+                        continue
+                    except requests.exceptions.RequestException as e:
+                        last_err = e
+                        if self.debug:
+                            self._log(f"v1 file endpoint {url} request failed: {e}")
+                        continue
                 if resp.status_code == 200:
                     # If content-type is image, return raw
                     ct = resp.headers.get('Content-Type', '')

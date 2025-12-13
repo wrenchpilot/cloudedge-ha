@@ -160,6 +160,7 @@ Examples:
     parser.add_argument('--output', '-o', default='snapshot.jpg', help='Output file for snapshot')
     parser.add_argument('--skip-wake', action='store_true', help='Skip wake step (camera already awake)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--insecure', action='store_true', help='Disable TLS verification for snapshot probes (INSECURE, debug only)')
     
     args = parser.parse_args()
     
@@ -174,7 +175,8 @@ Examples:
         password=args.password,
         country_code=args.country_code,
         phone_code=args.phone_code,
-        debug=args.debug
+        debug=args.debug,
+        probe_allow_insecure=args.insecure,
     )
     
     try:
