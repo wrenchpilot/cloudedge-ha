@@ -75,18 +75,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     openapi_base_url = data.get(CONF_OPENAPI_BASE_URL) or None
     p2p_mode = data.get(CONF_P2P_MODE, DEFAULT_P2P_MODE)
     debug_enabled = data.get(CONF_DEBUG, DEFAULT_DEBUG)
-    # Backwards compat for old flags
-    # If user kept older keys in the entry, map them; otherwise derive from p2p_mode
-    disable_p2p_flag = data.get('disable_p2p', None)
-    force_local_flag = data.get('force_local_p2p', None)
-    if disable_p2p_flag is not None:
-        disable_p2p = bool(disable_p2p_flag)
-    else:
-        disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
-    if force_local_flag is not None:
-        force_local_p2p = bool(force_local_flag)
-    else:
-        force_local_p2p = (p2p_mode == P2P_MODE_FORCE_LOCAL)
+    disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
+    force_local_p2p = (p2p_mode == P2P_MODE_FORCE_LOCAL)
     phone_code = data[CONF_PHONE_CODE]
 
     try:
@@ -110,8 +100,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             region=normalized_region,
             base_url=base_url,
             openapi_base_url=openapi_base_url,
-            disable_p2p=disable_p2p,
-            force_local_p2p=force_local_p2p,
+            p2p_mode=p2p_mode,
         )
 
         # Test authentication
@@ -146,7 +135,6 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             "device_count": device_count,
             "p2p_mode": p2p_mode,
             "debug": debug_enabled,
-            "force_local_p2p": force_local_p2p,
         }
 
     except AuthenticationError as e:

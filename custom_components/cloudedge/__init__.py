@@ -30,7 +30,9 @@ from .const import (
     CONF_OPENAPI_BASE_URL,
     CONF_P2P_MODE,
     CONF_DEBUG,
-    CONF_DISABLE_P2P,
+    P2P_MODE_DISABLED,
+    P2P_MODE_FORCE_LOCAL,
+    DEFAULT_P2P_MODE,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_REGION,
 )
@@ -60,6 +62,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     region = entry.data.get(CONF_REGION, DEFAULT_REGION)
     base_url = entry.data.get(CONF_BASE_URL)
     openapi_base_url = entry.data.get(CONF_OPENAPI_BASE_URL)
+
+    
+    
 
     # Create coordinator
     coordinator = CloudEdgeCoordinator(
@@ -183,12 +188,8 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                 if not self.username or not self.password:
                     _LOGGER.error("CloudEdge credentials missing: username or password not set in config entry")
                     raise AuthenticationError("Missing credentials in config entry")
-                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE)
-                disable_p2p = p2p_mode == "disabled" if p2p_mode is not None else self.config_entry.data.get(CONF_DISABLE_P2P, True)
-                force_local_p2p = p2p_mode == "force_local" if p2p_mode is not None else self.config_entry.data.get('force_local_p2p', False)
-                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE)
-                disable_p2p = p2p_mode == "disabled" if p2p_mode is not None else self.config_entry.data.get(CONF_DISABLE_P2P, True)
-                force_local_p2p = p2p_mode == "force_local" if p2p_mode is not None else self.config_entry.data.get('force_local_p2p', False)
+                # Use p2p_mode as the canonical setting
+                p2p_mode = self.config_entry.data.get(CONF_P2P_MODE, DEFAULT_P2P_MODE)
                 self.client = CloudEdgeClient(
                     username=self.username,
                     password=self.password,
@@ -199,8 +200,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
-                    disable_p2p=disable_p2p,
-                    force_local_p2p=force_local_p2p,
+                    p2p_mode=p2p_mode,
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for validation for user %s (region=%s, base_url=%s)",
@@ -294,8 +294,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
-                    disable_p2p=disable_p2p,
-                    force_local_p2p=force_local_p2p,
+                    p2p_mode=p2p_mode,
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for user %s (region=%s, base_url=%s)",

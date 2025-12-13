@@ -43,6 +43,9 @@ from .constants import (
     DEFAULT_TIMEOUT,
     TYPE_REGION_EU,
     get_urls_for_region,
+    DEFAULT_P2P_MODE,
+    P2P_MODE_DISABLED,
+    P2P_MODE_FORCE_LOCAL,
 )
 from .utils import retry_on_failure
 
@@ -86,8 +89,7 @@ class CloudEdgeClient:
         region: Optional[str] = None,
         base_url: Optional[str] = None,
         openapi_base_url: Optional[str] = None,
-        disable_p2p: bool = False,
-        force_local_p2p: bool = False,
+        p2p_mode: Optional[str] = None,
         log_signature_debug: bool = False,
         use_epoch_timestamp: bool = False,
     ):
@@ -158,7 +160,10 @@ class CloudEdgeClient:
         # Network detection cache
         self._local_network = None
         self._network_detected = False
-        self.force_local_p2p = bool(force_local_p2p)
+        # p2p_mode influences whether P2P is disabled or forced local; default to disabled if not set
+        if p2p_mode is None:
+            p2p_mode = DEFAULT_P2P_MODE
+        self.force_local_p2p = (p2p_mode == P2P_MODE_FORCE_LOCAL)
         # Cache wake_device results to avoid frequent wake calls
         self._last_wake_times: Dict[str, float] = {}
         self._last_wake_results: Dict[str, Dict] = {}
@@ -180,7 +185,7 @@ class CloudEdgeClient:
             self._log(f"Using BASE_URL={self.BASE_URL} OPENAPI_BASE_URL={self.OPENAPI_BASE_URL}")
         # Per-account and device cached endpoints for snapshot retrieval
         # Structure: {'snapshotEndpointCache': {userID: {serial: endpoint_info}}}
-        self.disable_p2p = bool(disable_p2p)
+        self.disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
         
     def _detect_local_network(self) -> Optional[str]:
         """Detect the local network subnet."""
