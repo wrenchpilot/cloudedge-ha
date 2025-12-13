@@ -184,7 +184,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     password=self.password,
                     country_code=self.country_code,
                     phone_code=self.phone_code,
-                    debug=True,  # Enable debug logging
+                    debug=False,  # Enable debug logging
                     session_cache_file=cache_path,
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
@@ -276,7 +276,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     password=self.password,
                     country_code=self.country_code,
                     phone_code=self.phone_code,
-                    debug=True,  # Enable debug logging
+                    debug=False,  # Enable debug logging
                     session_cache_file=cache_path,
                     # Pass region and URL overrides from the config entry to ensure consistency
                     region=(self.config_entry.data.get(CONF_REGION) if self.config_entry.data.get(CONF_REGION) != "AUTO" else None),
