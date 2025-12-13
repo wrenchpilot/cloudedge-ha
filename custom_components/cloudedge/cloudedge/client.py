@@ -1769,13 +1769,17 @@ class CloudEdgeClient:
 
         # Note: No early-exit checks here — always attempt probing.
 
-        try:
-            image = self.get_device_snapshot(device_id, device_serial)
-        except Exception:
-            image = None
+        # Snapshot probing is intentionally disabled for now to avoid
+        # aggressive scanning of snapshot/preview endpoints that can
+        # cause undesirable network activity or mark devices offline.
+        if force_reprobe:
+            # Clearing cache is allowed but we won't actively reprobe here
+            self.clear_cached_snapshot_endpoint(device_serial)
 
         endpoint_info = self._get_cached_snapshot_endpoint(device_serial)
-        return { 'endpoint_info': endpoint_info, 'image': image }
+        if self.debug:
+            self._log(f"Snapshot probing is disabled; returning cached endpoint for {device_serial}: {endpoint_info}")
+        return { 'endpoint_info': endpoint_info, 'image': None, 'probe_disabled': True }
 
     def _resolve_full_url(self, url: str) -> str:
         """
@@ -2261,75 +2265,12 @@ class CloudEdgeClient:
         Returns:
             Optional[bytes]: JPEG image data or None if not available
         """
-        # Get latest events (returns empty list if no cloud subscription)
-        events = self.get_alarm_events(device_id, limit=1)
-        if not events:
-            # Don't log - this is expected for cameras without cloud subscription
-            return None
-
-        latest = events[0]
-        image_url = latest.get('image_url')
-        image_id = latest.get('image_id') or latest.get('imageId') or latest.get('picId')
-        if not image_url and not image_id:
-            if self.debug:
-                self._log("Latest alarm event has no image URL")
-            return None
-
-        if not image_url and image_id:
-            if self.debug:
-                self._log(f"Attempting fetch of alarm image via numeric ID: {image_id}")
-            try:
-                img = self._get_image_by_id(str(image_id), device_serial, formatted_sn=None)
-                if img:
-                    return img
-            except Exception as e:
-                if self.debug:
-                    self._log(f"Failed to fetch alarm image by ID {image_id}: {e}")
-            # Fall through - if numeric ID failed, we may still try image_url if present
-        if self.debug and image_url:
-            self._log(f"Fetching alarm image from: {image_url[:80]}...")
-
-        # Download image (resolve relative URLs to absolute)
-        full_image_url = self._resolve_full_url(image_url) if image_url else image_url
-        response = self._make_request(
-            'GET',
-            full_image_url,
-            timeout=DEFAULT_TIMEOUT
-        )
-
-        if response.status_code != 200:
-            if self.debug:
-                self._log(f"Failed to download alarm image: HTTP {response.status_code}")
-            return None
-
-        image_data = response.content
-
-        # Decrypt if necessary
-        if latest.get('is_encrypted'):
-            if self.debug:
-                self._log("Decrypting encrypted image...")
-            image_data = self.decrypt_alarm_image(image_data, device_serial, image_url)
-
-        # Validate JPEG header
-        if image_data[:2] != b'\xff\xd8':
-            if self.debug:
-                self._log("Warning: Decrypted image does not have valid JPEG header")
-            # Try without decryption as fallback
-            if response.content[:2] == b'\xff\xd8':
-                return response.content
-
-        return image_data
-        # If image URL not provided but numeric image ID exists, try fetching by ID
-        if not image_url and image_id:
-            if self.debug:
-                self._log(f"Fetching alarm image by ID {image_id} for {device_serial}")
-            try:
-                img = self._get_image_by_id(str(image_id), device_serial, formatted_sn=None)
-                if img:
-                    return img
-            except Exception as e:
-                if self.debug:
-                    self._log(f"Failed to fetch alarm image by id {image_id}: {e}")
+        # Alarm image retrieval has been disabled to avoid network activity
+        # related to downloading snapshots or alarm images. This method is a
+        # no-op and will always return None. Enable fetching only if you
+        # explicitly re-enable snapshot probing in a controlled manner.
+        if self.debug:
+            self._log(f"get_latest_alarm_image called for {device_serial}/{device_id} but alarm image retrieval is disabled")
         return None
 
     def get_device_snapshot(self, device_id: int, device_serial: str) -> Optional[bytes]:
@@ -2341,224 +2282,10 @@ class CloudEdgeClient:
         return raw JPEG/PNG bytes. Returns None if no snapshot is available
         or if the account/device lacks permission (no cloud subscription).
         """
-        if not self.session_data:
-            raise AuthenticationError("Not authenticated - call authenticate() first")
-
-        # Build base params similar to other APIs
-        timestamp = self._generate_url_timestamp()
-        nonce = int(time.time())
-        base_params = {
-            'appVer': '5.5.1',
-            'appVerCode': '551',
-            'deviceID': str(device_id),
-            'lngType': 'en',
-            'phoneType': 'a',
-            'signatureMethod': 'HMAC-SHA1',
-            'signatureNonce': str(nonce),
-            'signatureVersion': '1.0',
-            'sourceApp': '8',
-            'timestamp': timestamp,
-            'userID': str(self.session_data['userID']),
-            'userToken': self.session_data['userToken']
-        }
-
-        params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
-        xca_headers = self._generate_xca_headers(params_str, self.session_data.get('userToken'))
-        signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
-        signature_encoded = quote(signature)
-
-        # Build candidate snapshot endpoints using several known base domains.
-        # Some CloudEdge/Meari deployments expose snapshot endpoints on different hosts
-        # depending on region/account. Try a set of common variants to increase hit rate.
-        endpoint_paths = [
-            "/v1/app/device/snapshot",
-            "/v1/app/device/preview",
-            "/app/device/snapshot.action",
-            "/ppstrongs/getSnapshot.action",
-            "/ppstrongs/getDeviceSnapshot.action",
-        ]
-
-        # Candidate base domains to try (in order of preference)
-        candidate_bases = [
-            self.BASE_URL,
-            # prefer explicit OPENAPI base if set (may differ across accounts)
-            (self.OPENAPI_BASE_URL or ""),
-        ]
-
-        # Add additional well-known domains used by the ecosystem as fallbacks
-        extra_bases = [
-            "https://openapi.mearicloud.com",
-            "https://openapi-us.mearicloud.com",
-            "https://openapi-usce.mearicloud.com",
-            "https://api.meari.com",
-            "https://api-us.meari.com",
-            "https://apis-eu-frankfurt.cloudedge360.com",
-            "https://apis.cloudedge360.com",
-        ]
-
-        # Merge extras, avoiding duplicates and empty values
-        for b in extra_bases:
-            if b and b not in candidate_bases:
-                candidate_bases.append(b)
-
-        # If login returned a custom openapi domain in IoT keys, prefer it early
-        iot_keys = self.session_data.get('iotPlatformKeys', {})
-        if iot_keys.get('openapidomain'):
-            openapi_domain = iot_keys['openapidomain']
-            if not openapi_domain.startswith('http'):
-                openapi_domain = f"https://{openapi_domain}"
-            # Ensure the per-account OpenAPI domain is tried first
-            if openapi_domain not in candidate_bases:
-                candidate_bases.insert(0, openapi_domain)
-
-        # Construct the full list of snapshot endpoints to probe
-        snapshot_endpoints = []
-        for base in candidate_bases:
-            if not base:
-                continue
-            for path in endpoint_paths:
-                snapshot_endpoints.append(f"{base.rstrip('/')}{path}")
-
-        headers = {
-            "Accept-Language": "en-US,en;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
-            "Accept-Encoding": "gzip, deflate, br",
-        }
-        headers.update(xca_headers)
-
-        last_error = None
-        for endpoint in snapshot_endpoints:
-            try:
-                self._log(f"Trying snapshot endpoint: {endpoint}")
-                url = f"{endpoint}?{params_str}&signature={signature_encoded}"
-                # Use session.get directly to prevent _make_request from logging HTTPError
-                try:
-                    response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                except requests.exceptions.SSLError as e:
-                    # TLS verification failed (certificate/hostname mismatch). Provide concise guidance.
-                    self._log(f"SSL verification failed for snapshot endpoint {endpoint}: {str(e).split(':')[-1].strip()}")
-                    self._log("If you are debugging, you can set probe_allow_insecure=True when creating the client to bypass TLS verification (INSECURE - only for debugging).")
-                    last_error = e
-                    continue
-                except requests.exceptions.RequestException as e:
-                    if self.debug:
-                        self._log(f"Snapshot endpoint {endpoint} failed to connect: {e}")
-                    last_error = e
-                    continue
-
-                # Some endpoints return an image directly
-                content_type = response.headers.get('Content-Type', '')
-                if response.status_code == 200 and content_type and 'image' in content_type:
-                    self._log(f"Snapshot endpoint returned image: {endpoint} (Content-Type: {content_type})")
-                    try:
-                        self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "endpoint": endpoint})
-                    except Exception:
-                        pass
-                    return response.content
-
-                # Some servers expect a POST/form request for snapshot endpoints. Try POST as fallback.
-                try:
-                    post_headers = headers.copy()
-                    post_headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
-                    if self.debug:
-                        self._log(f"Attempting POST fallback to snapshot endpoint: {endpoint}")
-                    post_resp = self._session.post(endpoint, headers=post_headers, data=base_params, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                    post_ct = post_resp.headers.get('Content-Type', '')
-                    if post_resp.status_code == 200 and post_ct and 'image' in post_ct:
-                        self._log(f"Snapshot endpoint returned image via POST: {endpoint} (Content-Type: {post_ct})")
-                        try:
-                            self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "endpoint": endpoint, "method": "POST"})
-                        except Exception:
-                            pass
-                        return post_resp.content
-                    # If POST returned JSON with image URL or id, parse it below via post_resp.json()
-                    try:
-                        data = post_resp.json()
-                    except Exception:
-                        # not JSON, continue to next endpoint
-                        pass
-                except requests.exceptions.SSLError as e:
-                    # TLS verification failed on POST attempt
-                    self._log(f"SSL verification failed for snapshot endpoint POST {endpoint}: {str(e).split(':')[-1].strip()}")
-                    self._log("If debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
-                except requests.exceptions.RequestException as e:
-                    if self.debug:
-                        self._log(f"Snapshot endpoint POST {endpoint} failed: {e}")
-
-                # If JSON, try to extract image URL or base64 payload
-                data = None
-                try:
-                    data = response.json()
-                except Exception:
-                    data = None
-
-                # Diagnostic logging when debug enabled: show status and small body snippet
-                if self.debug:
-                    try:
-                        body_snippet = response.text[:500]
-                    except Exception:
-                        body_snippet = '<unavailable>'
-                    self._log(
-                        f"Snapshot endpoint {endpoint} returned status={response.status_code} content-type={content_type} body_snippet={body_snippet!r}"
-                    )
-
-                if isinstance(data, dict):
-                    # Extract image URL or a numeric ID
-                    result = data.get('result') or data
-                    image_url = None
-                    if isinstance(result, dict):
-                        for key in ['imgUrl', 'imageUrl', 'snapshotUrl', 'deviceImg', 'picUrl', 'picture']:
-                            val = result.get(key)
-                            if val and isinstance(val, str) and (val.startswith('http') or val.startswith('/')):
-                                image_url = val
-                                break
-
-                    if image_url:
-                        # Download image using session.get directly
-                        try:
-                            img_url = self._resolve_full_url(image_url)
-                            img_resp = self._session.get(img_url, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                            if img_resp.status_code == 200:
-                                self._log(f"Downloaded image from URL returned by endpoint {endpoint}: {img_url}")
-                                content = img_resp.content
-                                # Decrypt if necessary
-                                if self._is_encrypted_image(image_url):
-                                    content = self.decrypt_alarm_image(content, device_serial, image_url)
-                                if content and content[:2] in (b'\xff\xd8', b'\x89PN'):
-                                    self._log(f"Got image from {endpoint} -> {img_url}")
-                                    try:
-                                        self._set_cached_snapshot_endpoint(device_serial, {"type": "v1", "url": url, "img_url": img_url, "endpoint": endpoint})
-                                    except Exception:
-                                        pass
-                                    return content
-                        except requests.exceptions.RequestException:
-                            # Ignore connection errors to image URL, continue to next endpoint
-                                pass
-                    # If cloud returns numeric image ID (Cloud 2.0), try to fetch by ID
-                    if not image_url:
-                        # Try to find image_id fields
-                        image_id = None
-                        for id_key in ['image_id', 'imageId', 'picId', 'pic_id', 'fileId', 'file_id']:
-                            v = result.get(id_key) if isinstance(result, dict) else None
-                            if v:
-                                image_id = str(v)
-                                break
-                        if image_id:
-                            # Attempt to download via OpenAPI/file endpoints
-                            img_by_id = self._get_image_by_id(image_id, device_serial, formatted_sn=None)
-                            if img_by_id:
-                                return img_by_id
-
-                # Not successful - keep trying next endpoint
-            except Exception as e:
-                # Catch-unexpected errors and continue
-                if self.debug:
-                    self._log(f"Snapshot endpoint {endpoint} unexpected error: {e}")
-                last_error = e
-                continue
-
-        if last_error and self.debug:
-            self._log(f"Snapshot requests failed on all endpoints: {last_error}")
+        # Snapshot retrieval has been disabled to avoid scanning snapshot/preview endpoints.
+        # This method intentionally performs no network activity and returns None.
+        if self.debug:
+            self._log(f"get_device_snapshot called for {device_serial}/{device_id} but snapshots have been disabled")
         return None
 
     def _get_image_by_id(self, image_id: str, device_serial: str, formatted_sn: Optional[str] = None) -> Optional[bytes]:
@@ -2568,185 +2295,10 @@ class CloudEdgeClient:
         This method will try several likely OpenAPI paths and query parameter names to
         accommodate differences across CloudEdge/Meari server regions and API versions.
         """
-        if not image_id:
-            return None
-
-        if not self.session_data:
-            raise AuthenticationError("Not authenticated - call authenticate() first")
-
-        iot_keys = self.session_data.get('iotPlatformKeys', {}) or {}
-        access_id = iot_keys.get('accessid')
-        access_key = iot_keys.get('accesskey')
-        openapi_base = iot_keys.get('openapidomain') or iot_keys.get('platformdomain') or self.OPENAPI_BASE_URL
-        if not openapi_base:
-            openapi_base = self.OPENAPI_BASE_URL
-
-        # Format serial if not provided
-        if not formatted_sn and device_serial:
-            formatted_sn = self._format_sn(device_serial)
-
-        # Build candidate openapi file/download endpoints & parameters to try
-        # The exact endpoint and parameter name varies by server; try common variants
-        candidate_paths = [
-            ("/openapi/msg/alert/file", {"picId": image_id}),
-            ("/openapi/msg/alert/pic", {"picId": image_id}),
-            ("/openapi/file/get", {"fileId": image_id}),
-            ("/openapi/file/download", {"fileId": image_id}),
-            ("/openapi/device/file", {"fileId": image_id}),
-            ("/openapi/device/pic", {"picId": image_id}),
-        ]
-        # Try some v1 endpoints as well (non-openapi variants)
-        candidate_paths += [
-            ("/v1/app/msg/alert/file", {"picId": image_id}),
-            ("/v1/app/msg/alert/pic", {"picId": image_id}),
-            ("/v1/app/file/get", {"fileId": image_id}),
-            ("/v1/app/file/download", {"fileId": image_id}),
-        ]
-
-        headers = {
-            "Accept": "*/*",
-            "User-Agent": DEFAULT_HEADERS.get('User-Agent'),
-            "Accept-Language": "en-US,en;q=0.8",
-            "X-Ca-Key": CA_KEY,
-        }
-
-        last_err = None
-        for path, params in candidate_paths:
-            try:
-                # Build request differently depending on openapi vs v1 endpoints
-                if path.startswith('/openapi'):
-                    signature, expires = self._get_signature_for_openapi(path, 'get', access_key if access_key else "")
-                    query = {
-                        "accessid": access_id,
-                        "expires": expires,
-                        "signature": signature,
-                    }
-                    if formatted_sn:
-                        query['deviceid'] = formatted_sn
-                    query.update(params)
-                    url = f"{openapi_base}{path}"
-                    self._log(f"Trying openapi file endpoint: {url} (params {list(params.keys())})")
-                    try:
-                        resp = self._session.get(url, headers=headers, params=query, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                    except requests.exceptions.SSLError as e:
-                        self._log(f"SSL verification failed for openapi file endpoint {url}: {str(e).split(':')[-1].strip()}")
-                        self._log("If you are debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
-                        last_err = e
-                        continue
-                    except requests.exceptions.RequestException as e:
-                        last_err = e
-                        if self.debug:
-                            self._log(f"OpenAPI file endpoint {url} request failed: {e}")
-                        continue
-                else:
-                    # v1 and other endpoints require xca headers and standard signature
-                    timestamp = self._generate_url_timestamp()
-                    nonce = int(time.time())
-                    base_params = {
-                        'appVer': '5.5.1',
-                        'appVerCode': '551',
-                        'deviceID': formatted_sn or '',
-                        'lngType': 'en',
-                        'phoneType': 'a',
-                        'signatureMethod': 'HMAC-SHA1',
-                        'signatureNonce': str(nonce),
-                        'signatureVersion': '1.0',
-                        'sourceApp': '8',
-                        'timestamp': timestamp,
-                        'userID': str(self.session_data.get('userID')),
-                        'userToken': self.session_data.get('userToken')
-                    }
-                    base_params.update(params)
-                    params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
-                    xca_headers = self._generate_xca_headers(params_str, self.session_data.get('userToken'))
-                    signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
-                    signature_encoded = quote(signature)
-                    url = f"{self.BASE_URL}{path}?{params_str}&signature={signature_encoded}"
-                    req_headers = headers.copy()
-                    req_headers.update(xca_headers)
-                    self._log(f"Trying v1 file endpoint: {url}")
-                    try:
-                        resp = self._session.get(url, headers=req_headers, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                    except requests.exceptions.SSLError as e:
-                        self._log(f"SSL verification failed for v1 file endpoint {url}: {str(e).split(':')[-1].strip()}")
-                        self._log("If you are debugging, set probe_allow_insecure=True to bypass TLS verification (INSECURE).")
-                        last_err = e
-                        continue
-                    except requests.exceptions.RequestException as e:
-                        last_err = e
-                        if self.debug:
-                            self._log(f"v1 file endpoint {url} request failed: {e}")
-                        continue
-                if resp.status_code == 200:
-                    # If content-type is image, return raw
-                    ct = resp.headers.get('Content-Type', '')
-                    if ct and 'image' in ct:
-                        # If image appears encrypted (no JPEG header), try to decrypt using device serial
-                        content = resp.content
-                        # If it's not a JPEG/PNG, attempt to decrypt with device serial
-                        if (not content.startswith(b'\xff\xd8') and not content.startswith(b'\x89PN')):
-                            try:
-                                # Attempt to decrypt assuming cloud-style encryption
-                                decrypted = self.decrypt_alarm_image(content, device_serial, url)
-                                if decrypted and (decrypted[:2] == b'\xff\xd8' or decrypted[:4] == b'\x89PNG'):
-                                    self._log(f"OpenAPI file endpoint {url} returned decrypted image (via {path})")
-                                    try:
-                                        self._set_cached_snapshot_endpoint(device_serial, {"type": "openapi", "base": openapi_base, "path": path, "params": params})
-                                    except Exception:
-                                        pass
-                                    return decrypted
-                            except Exception:
-                                pass
-                        return content
-                    # Some endpoints return JSON with result containing URL or base64
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        data = None
-
-                    if isinstance(data, dict):
-                        # Look for known fields
-                        result = data.get('result') or data
-                        # Direct URL
-                        for key in ('url', 'fileUrl', 'imgUrl', 'imageUrl', 'downloadUrl'):
-                            val = result.get(key)
-                            if val and isinstance(val, str) and val.startswith('http'):
-                                try:
-                                    full_val = self._resolve_full_url(val)
-                                    img = self._session.get(full_val, timeout=DEFAULT_TIMEOUT, verify=(not self.probe_allow_insecure))
-                                    if img.status_code == 200 and 'image' in img.headers.get('Content-Type', ''):
-                                        content = img.content
-                                        # Decrypt if necessary
-                                        if self._is_encrypted_image(val):
-                                            try:
-                                                content = self.decrypt_alarm_image(content, device_serial, val)
-                                            except Exception:
-                                                pass
-                                        self._log(f"OpenAPI file endpoint {url} returned image via URL: {full_val} (via {path})")
-                                        try:
-                                            self._set_cached_snapshot_endpoint(device_serial, {"type": "openapi", "base": openapi_base, "path": path, "params": params, "image_url": full_val})
-                                        except Exception:
-                                            pass
-                                        return content
-                                except requests.exceptions.RequestException:
-                                    pass
-                        # Some endpoints may return base64 file data
-                        if isinstance(result.get('file'), str) and result.get('file'):
-                            try:
-                                return base64.b64decode(result.get('file'))
-                            except Exception:
-                                pass
-                else:
-                    if self.debug:
-                        self._log(f"OpenAPI file endpoint {url} returned HTTP {resp.status_code}")
-                    last_err = resp
-                    continue
-            except Exception as e:
-                last_err = e
-                if self.debug:
-                    self._log(f"Error during openapi file request: {e}")
-                continue
-
-        if last_err and self.debug:
-            self._log(f"All openapi file endpoints failed for id {image_id}: {last_err}")
+        # Image-by-ID retrieval has been disabled to prevent any network
+        # activity for fetching alarm/snapshot images. This function is a
+        # no-op and will always return None. Re-enable only when snapshot
+        # probing is required and under control.
+        if self.debug:
+            self._log(f"_get_image_by_id called for id {image_id} but image retrieval is disabled")
         return None
