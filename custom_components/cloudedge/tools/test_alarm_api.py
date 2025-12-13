@@ -33,6 +33,14 @@ def test_alarm_endpoints(client: CloudEdgeClient, device_id: int, device_serial:
     print(f"Date: {datetime.datetime.now().strftime('%Y%m%d')}")
     print(f"{'='*60}\n")
     
+    # Show iotPlatformKeys for debugging
+    iot_keys = client.session_data.get('iotPlatformKeys', {})
+    if iot_keys:
+        print(f"OpenAPI domain: {iot_keys.get('openapidomain', 'NOT SET')}")
+        print(f"Platform domain: {iot_keys.get('platformdomain', 'NOT SET')}")
+        print(f"Access ID: {'***' if iot_keys.get('accessid') else 'NOT SET'}")
+        print()
+    
     # Test the main method
     print("Testing get_alarm_events()...")
     print("(This will try multiple endpoints and report results)\n")

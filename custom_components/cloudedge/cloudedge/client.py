@@ -717,6 +717,11 @@ class CloudEdgeClient:
                 try:
                     if normalized_iot_keys:
                         self._log(f"OpenAPI keys found (masked): accessid={normalized_iot_keys.get('accessid') and '***'}, accesskey={normalized_iot_keys.get('accesskey') and '***'}")
+                        # Update OPENAPI_BASE_URL from iotPlatformKeys if available
+                        openapi_domain = normalized_iot_keys.get('openapidomain')
+                        if openapi_domain:
+                            self.OPENAPI_BASE_URL = openapi_domain
+                            self._log(f"Updated OPENAPI_BASE_URL from iotPlatformKeys: {openapi_domain}")
                     else:
                         self._log("No OpenAPI keys found in login response; remote configuration endpoints may be unavailable")
                 except Exception:
@@ -1621,7 +1626,7 @@ class CloudEdgeClient:
         self, 
         device_id: int, 
         day: Optional[str] = None,
-        index: str = "1",
+        index: str = "0",
         direction: int = 1,
         event_type: int = 0,
         ai_types: Optional[List[int]] = None,
@@ -1633,13 +1638,24 @@ class CloudEdgeClient:
         This method attempts to fetch alarm messages from the CloudEdge API.
         These contain motion/event thumbnails that can be used as camera snapshots.
         
+        Based on Meari SDK documentation:
+        - getAlertMsg: for evt < 1 (old API)
+        - getAlertMsgWithVideo: for evt >= 1 (Cloud 2.0 API)
+        
         Args:
             device_id (int): Device ID (numeric ID, not serial number)
             day (str): Date in format 'YYYYMMDD'. Defaults to today.
-            index (str): Pagination index. "1" for first page.
-            direction (int): 0 = older, 1 = newer
-            event_type (int): Event type filter (0=all, 1=motion, 2=pir, 3=bell, 11=human, 17=car, 18=pet)
-            ai_types (List[int]): AI detection types (0=person, 1=pet, 2=car, etc.)
+            index (str): Pagination index. "0" for latest (when direction=1).
+                        Pass eventTime of last message for direction=0.
+            direction (int): 1 = refresh/latest (default), 0 = load more/older
+            event_type (int): Event type filter:
+                0 = all messages (default)
+                1 = motion, 2 = pir, 3 = bell, 6 = decibel, 7 = cry,
+                9 = baby, 10 = tear, 11 = human, 12 = face, 13 = safety
+            ai_types (List[int]): AI detection types (None = no filter):
+                0 = people, 1 = pet, 2 = car coming, 3 = car retention,
+                4 = car driving away, 5 = package dropping, 
+                6 = package retention, 7 = package taken
             limit (int): Maximum number of events to return
             
         Returns:
@@ -1652,23 +1668,17 @@ class CloudEdgeClient:
         if not self.session_data:
             raise AuthenticationError("Not authenticated - call authenticate() first")
             
-        # Default to today's date
+        # Default to today's date (format YYYYMMDD per SDK spec)
         if not day:
             day = datetime.datetime.now().strftime('%Y%m%d')
-            
-        # Default AI types for general detection
-        if ai_types is None:
-            ai_types = [0, 1, 2, 3, 4, 5, 6, 7]  # All AI types
             
         self._log(f"Getting alarm events for device {device_id}, date {day}...")
         
         timestamp = self._generate_url_timestamp()
         nonce = int(time.time())
         
-        # Format ai_types as comma-separated string
-        ai_types_str = ",".join(str(t) for t in ai_types)
-        
-        # Build the base parameters - try different endpoint variations
+        # Build the base parameters matching Meari SDK getAlertMsgWithVideo
+        # SDK spec: "Passing eventType=0 and aiType=null if you want to get all messages"
         base_params = {
             'appVer': '5.5.1',
             'appVerCode': '551',
@@ -1677,7 +1687,6 @@ class CloudEdgeClient:
             'index': index,
             'direction': str(direction),
             'eventType': str(event_type),
-            'aiType': ai_types_str,
             'lngType': 'en',
             'phoneType': 'a',
             'signatureMethod': 'HMAC-SHA1',
@@ -1689,20 +1698,24 @@ class CloudEdgeClient:
             'userToken': self.session_data['userToken']
         }
         
-        # List of potential endpoints to try (based on SDK method analysis)
-        # SDK methods are getAlertMsg and getAlertMsgWithVideo
+        # Only add aiType if specifically provided (SDK says pass null for all)
+        if ai_types is not None:
+            base_params['aiType'] = ",".join(str(t) for t in ai_types)
+        
+        # List of potential endpoints based on Meari SDK method names:
+        # - getAlertMsg (old API, evt < 1)
+        # - getAlertMsgWithVideo (Cloud 2.0, evt >= 1)
+        # The test showed /v1/app/msg/alert/list returns 1023 (exists but wrong params)
         potential_endpoints = [
-            '/v1/app/msg/alarm/list',          # Most likely based on SDK patterns
-            '/v1/app/device/alarm/list',       # Alternative pattern
-            '/v1/app/msg/alert/list',          # getAlertMsg -> alert
-            '/v1/app/device/alert/list',       # getAlertMsg -> alert (device prefix)
-            '/v1/app/alert/msg/list',          # getAlertMsg -> msg/list
-            '/v1/app/alertMsg/list',           # camelCase matching SDK
-            '/v1/app/msg/device/alarm/list',   # Combined pattern
-            '/v1/app/alarm/device/list',       # Alternative
-            '/v1/app/device/msg/list',         # Message list per device
-            '/v1/app/user/alarm/list',         # User alarm list
-            '/v1/app/home/alarm/list',         # Home alarm list (like home/list for devices)
+            '/v1/app/msg/alert/list',          # SDK getAlertMsg - RETURNED 1023 (exists!)
+            '/v1/app/msg/alertWithVideo/list', # SDK getAlertMsgWithVideo pattern
+            '/v1/app/msg/alarm/list',          # Alternative naming
+            '/v1/app/device/alarm/list',       # Device-prefixed
+            '/v1/app/device/alert/list',       # Device-prefixed alert
+            '/v1/app/alert/list',              # Simplified
+            '/v1/app/alarm/list',              # Simplified
+            '/v1/app/alertMsg/list',           # camelCase
+            '/v1/app/alarmMsg/list',           # camelCase variant
         ]
         
         # Generate X-Ca headers
@@ -1845,6 +1858,10 @@ class CloudEdgeClient:
         """
         Parse alarm events from API response.
         
+        Handles two response formats based on Meari SDK:
+        - evt < 1 (old API): imageUrl is a string URL, tumbnailPic is thumbnail
+        - evt >= 1 (Cloud 2.0): imageUrl is a long (numeric), eventTime format
+        
         Args:
             result: API result data (dict or list)
             
@@ -1857,16 +1874,15 @@ class CloudEdgeClient:
         if isinstance(result, list):
             raw_events = result
         elif isinstance(result, dict):
-            # Try common keys for event lists
+            # Try common keys for event lists from SDK
             raw_events = (
                 result.get('msgs', []) or
+                result.get('deviceAlarmMessages', []) or  # SDK class name
                 result.get('alarmList', []) or
                 result.get('events', []) or
                 result.get('list', []) or
                 result.get('data', [])
             )
-            if not raw_events and 'deviceAlarmMessages' in result:
-                raw_events = result['deviceAlarmMessages']
         else:
             return []
             
@@ -1874,45 +1890,95 @@ class CloudEdgeClient:
             if not isinstance(event, dict):
                 continue
                 
-            # Extract image URL from various possible keys
+            # Extract image URL - handle both string URLs and numeric IDs
+            # SDK: evt < 1 has 'imgUrl' (string), evt >= 1 has 'imageUrl' (long)
             image_url = None
-            for key in ['imageUrl', 'imgUrl', 'tumbnailPic', 'thumbUrl', 'picUrl', 'alarmImgUrl']:
-                if event.get(key) and isinstance(event.get(key), str):
-                    image_url = event.get(key)
-                    break
+            image_id = None
+            
+            for key in ['imgUrl', 'imageUrl', 'tumbnailPic', 'thumbUrl', 'picUrl', 'alarmImgUrl']:
+                val = event.get(key)
+                if val:
+                    if isinstance(val, str) and (val.startswith('http') or val.startswith('/')):
+                        image_url = val
+                        break
+                    elif isinstance(val, (int, float)) or (isinstance(val, str) and val.isdigit()):
+                        # Cloud 2.0 format - imageUrl is numeric ID
+                        image_id = str(val)
+                        # For Cloud 2.0, the imageUrl is often in aiVideoInfo or needs construction
+                        break
+                    elif isinstance(val, str):
+                        # String but not URL - could be relative path
+                        image_url = val
+                        break
+            
+            # Check for video info (Cloud 2.0 may have URLs in videoUrl list)
+            video_info = event.get('videoUrl') or event.get('aiVideoInfo') or []
+            if isinstance(video_info, list) and video_info:
+                first_video = video_info[0] if video_info else {}
+                if isinstance(first_video, dict):
+                    # VideoInfo has 'url' and 'duration' per SDK
+                    if not image_url and first_video.get('url'):
+                        # Use video thumbnail if no image
+                        pass
                     
-            # Extract event time
-            event_time = event.get('eventTime') or event.get('time') or event.get('createTime')
+            # Extract event time (SDK: eventTime for evt>=1, createDate for old)
+            event_time = (
+                event.get('eventTime') or 
+                event.get('createDate') or 
+                event.get('time') or 
+                event.get('createTime')
+            )
             
             parsed_event = {
                 'event_id': event.get('msgID') or event.get('id') or event.get('eventId'),
                 'device_id': event.get('deviceID') or event.get('deviceId'),
-                'event_type': event.get('eventType') or event.get('type'),
+                'event_type': event.get('imageAlertType') or event.get('eventType') or event.get('msgTypeID'),
                 'event_time': event_time,
                 'image_url': image_url,
-                'video_url': event.get('videoUrl'),
+                'image_id': image_id,  # For Cloud 2.0 numeric IDs
+                'video_info': video_info if isinstance(video_info, list) else [],
                 'is_encrypted': self._is_encrypted_image(image_url) if image_url else False,
                 'raw': event  # Keep raw data for debugging
             }
             
-            if image_url:  # Only include events with images
+            # Include events with either image URL or image ID
+            if image_url or image_id:
                 events.append(parsed_event)
+            elif self.debug:
+                self._log(f"Skipping event without image: {event.get('msgID') or event.get('eventTime')}")
                 
         return events
         
     def _is_encrypted_image(self, url: str) -> bool:
-        """Check if image URL points to an encrypted image (jepx1/jepx2/jepx3)."""
+        """
+        Check if image URL points to an encrypted image.
+        
+        Based on Meari SDK documentation:
+        - jpgx3 suffix: encrypted with device SN (default for Cloud 2.0)
+        - jpgx2 suffix: encrypted with user password
+        - jepx1/jepx2/jepx3: alternative naming (older format)
+        """
         if not url:
             return False
         url_lower = url.lower()
-        return any(ext in url_lower for ext in ['.jepx1', '.jepx2', '.jepx3', 'jepx1', 'jepx2', 'jepx3'])
+        # Check for both jpgx and jepx naming conventions
+        encrypted_extensions = [
+            '.jpgx1', '.jpgx2', '.jpgx3',  # Meari SDK naming
+            '.jepx1', '.jepx2', '.jepx3',  # Alternative naming
+            'jpgx1', 'jpgx2', 'jpgx3',      # Without dot
+            'jepx1', 'jepx2', 'jepx3'       # Without dot
+        ]
+        return any(ext in url_lower for ext in encrypted_extensions)
         
     def decrypt_alarm_image(self, image_data: bytes, device_serial: str, url: str = "") -> bytes:
         """
-        Decrypt an encrypted alarm image (jepx1/jepx2/jepx3 format).
+        Decrypt an encrypted alarm image (jpgx3/jpgx2 format).
         
-        The Meari SDK uses XOR-based decryption with the device serial number.
-        This is a reverse-engineered implementation based on SDK analysis.
+        Based on Meari SDK: SdkUtils.handleEncodedImage(url, img, sn, allPwd)
+        The SDK uses XOR-based decryption with the device serial number.
+        
+        For Cloud 2.0 (jpgx3): encrypted with device SN (default)
+        For jpgx2: encrypted with user password
         
         Args:
             image_data (bytes): Encrypted image data
@@ -1925,29 +1991,52 @@ class CloudEdgeClient:
         if not image_data or not device_serial:
             return image_data
             
-        # Check encryption version from URL
+        # Check encryption version from URL or file suffix
         url_lower = url.lower() if url else ""
         
         try:
-            # Convert serial to bytes for XOR key
+            # Based on SDK: SdkUtils.formatLicenceId(sn) is used as key
+            # The license ID is typically the device serial formatted
             key = device_serial.encode('utf-8')
             key_len = len(key)
             
-            if '.jepx1' in url_lower or 'jepx1' in url_lower:
-                # JEPX1: Simple XOR with serial
+            # JPGX3 / JEPX3: Encrypted with device SN (most common for Cloud 2.0)
+            if any(ext in url_lower for ext in ['.jpgx3', 'jpgx3', '.jepx3', 'jepx3']):
+                # SDK uses device SN as key - simple XOR decryption
+                decrypted = bytearray(len(image_data))
+                for i, byte in enumerate(image_data):
+                    decrypted[i] = byte ^ key[i % key_len]
+                
+                # Check if result is valid JPEG
+                if decrypted[:2] == b'\xff\xd8':
+                    return bytes(decrypted)
+                    
+                # Try alternative XOR pattern if simple doesn't work
+                decrypted = bytearray(len(image_data))
+                for i, byte in enumerate(image_data):
+                    key_byte = key[i % key_len]
+                    decrypted[i] = (byte ^ key_byte) & 0xFF
+                
+                if decrypted[:2] == b'\xff\xd8':
+                    return bytes(decrypted)
+                    
+                # Return original if neither works
+                self._log("JPGX3 decryption didn't produce valid JPEG")
+                return image_data
+                
+            # JPGX2 / JEPX2: Encrypted with user password  
+            elif any(ext in url_lower for ext in ['.jpgx2', 'jpgx2', '.jepx2', 'jepx2']):
+                # Would need user password - try SN as fallback
                 decrypted = bytearray(len(image_data))
                 for i, byte in enumerate(image_data):
                     decrypted[i] = byte ^ key[i % key_len]
                 return bytes(decrypted)
                 
-            elif '.jepx2' in url_lower or 'jepx2' in url_lower or '.jepx3' in url_lower or 'jepx3' in url_lower:
-                # JEPX2/JEPX3: More complex encryption - try XOR + offset
-                # Based on SDK decompilation hints
+            # JPGX1 / JEPX1: Simple XOR
+            elif any(ext in url_lower for ext in ['.jpgx1', 'jpgx1', '.jepx1', 'jepx1']):
                 decrypted = bytearray(len(image_data))
                 for i, byte in enumerate(image_data):
-                    # XOR with key byte + position offset
-                    key_byte = key[i % key_len]
-                    decrypted[i] = (byte ^ key_byte ^ (i & 0xFF)) & 0xFF
+                    decrypted[i] = byte ^ key[i % key_len]
                 return bytes(decrypted)
                 
             else:
