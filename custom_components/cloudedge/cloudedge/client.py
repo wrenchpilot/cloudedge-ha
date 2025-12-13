@@ -937,6 +937,15 @@ class CloudEdgeClient:
                     continue
                 seen.add(serial)
                 device_name = device.get('deviceName') or 'Unnamed'
+                
+                # Extract any potential thumbnail/image URLs from the device response
+                thumbnail_url = None
+                for key in ['alarmImgUrl', 'imgUrl', 'thumbUrl', 'coverImgUrl', 'snapshotUrl', 
+                           'lastAlarmUrl', 'deviceImg', 'coverUrl', 'picUrl', 'imageUrl']:
+                    if device.get(key) and isinstance(device.get(key), str):
+                        thumbnail_url = device.get(key)
+                        break
+                
                 device_dict = {
                     'device_id': device.get('deviceID'),
                     'serial_number': serial,
@@ -949,7 +958,8 @@ class CloudEdgeClient:
                         (device.get('devStatus') == 1) if 'devStatus' in device else
                         (device.get('online') is True) if 'online' in device else False
                     ),
-                    'home_id': home_id
+                    'home_id': home_id,
+                    'thumbnail_url': thumbnail_url,  # Cloud-stored thumbnail if available
                 }
                 device_dict['online'] = self._get_enhanced_device_status(device_dict)
                 devices.append(device_dict)
@@ -1112,8 +1122,14 @@ class CloudEdgeClient:
                 # Convert to standardized format
                 standardized_devices = []
                 for device in devices:
-                    # Debug: log all status-related fields from the raw device data
+                    # Debug: log ALL raw device fields to discover available data
                     if self.debug:
+                        self._log(f"Device '{device.get('deviceName')}' RAW fields: {list(device.keys())}")
+                        # Log any potential image/thumbnail URLs
+                        image_fields = {k: v for k, v in device.items() 
+                                       if any(x in k.lower() for x in ['img', 'image', 'thumb', 'url', 'cover', 'alarm', 'snapshot', 'pic'])}
+                        if image_fields:
+                            self._log(f"Device '{device.get('deviceName')}' IMAGE fields: {image_fields}")
                         status_fields = {k: v for k, v in device.items() if 'status' in k.lower() or 'online' in k.lower() or k in ['onLine', 'devStatus']}
                         self._log(f"Device '{device.get('deviceName')}' status fields: {status_fields}")
                     
@@ -1132,6 +1148,17 @@ class CloudEdgeClient:
                         if self.debug:
                             self._log(f"  Using online={device.get('online')} -> {online_status}")
                     
+                    # Extract any potential thumbnail/image URLs from the device response
+                    # CloudEdge cameras may include cloud-stored thumbnails for alarms/events
+                    thumbnail_url = None
+                    for key in ['alarmImgUrl', 'imgUrl', 'thumbUrl', 'coverImgUrl', 'snapshotUrl', 
+                               'lastAlarmUrl', 'deviceImg', 'coverUrl', 'picUrl', 'imageUrl']:
+                        if device.get(key) and isinstance(device.get(key), str):
+                            thumbnail_url = device.get(key)
+                            if self.debug:
+                                self._log(f"  Found thumbnail URL in '{key}': {thumbnail_url[:60]}...")
+                            break
+                    
                     device_dict = {
                         'device_id': device.get('deviceID'),
                         'serial_number': device.get('snNum'),
@@ -1139,7 +1166,8 @@ class CloudEdgeClient:
                         'type': device.get('deviceTypeName', 'Unknown'),
                         'type_id': device.get('devTypeID'),
                         'host_key': device.get('hostKey'),
-                        'online': online_status
+                        'online': online_status,
+                        'thumbnail_url': thumbnail_url,  # Cloud-stored thumbnail if available
                     }
                     
                     # Get enhanced online status (may override with ping result)

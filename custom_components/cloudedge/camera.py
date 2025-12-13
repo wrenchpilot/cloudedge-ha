@@ -171,108 +171,94 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return bytes of camera image."""
-        _LOGGER.debug("Camera image requested for %s - attempting to fetch snapshot", self._attr_name)
+        """Return bytes of camera image.
+        
+        CloudEdge/Meari cameras use TUTK P2P protocol and do NOT have HTTP snapshot endpoints.
+        We prioritize cloud-stored thumbnails from the API, which are the only reliable source.
+        """
+        _LOGGER.debug("Camera image requested for %s", self._attr_name)
 
-        # Attempt to fetch snapshot via multiple hints from device configuration
         device_data = self.coordinator.data.get(self._serial_number)
         if not device_data:
             _LOGGER.debug("No device data for %s", self._attr_name)
             return None
 
-        config = device_data.get("configuration") or {}
-
-        # Helper: attempt url fetch using client's session to reuse cookies/headers.
-        # Must run sync request in an executor to avoid blocking the event loop.
-        def _do_get(url: str):
+        # Helper: fetch URL with short timeout (cloud URLs should be fast)
+        def _do_get(url: str, timeout: int = 5):
             try:
                 session = getattr(self.coordinator.client, '_session', None)
                 if session:
-                    resp = session.get(url, timeout=10, verify=False)
+                    resp = session.get(url, timeout=timeout, verify=False)
                 else:
                     import requests
-                    resp = requests.get(url, timeout=10, verify=False)
+                    resp = requests.get(url, timeout=timeout, verify=False)
                 return resp
-            except Exception:
+            except Exception as e:
+                _LOGGER.debug("HTTP request to %s failed: %s", url, e)
                 return None
 
-        async def _try_url(url: str) -> bytes | None:
+        async def _try_url(url: str, timeout: int = 5) -> bytes | None:
+            """Try to fetch an image from a URL."""
             try:
-                resp = await self.hass.async_add_executor_job(_do_get, url)
+                resp = await self.hass.async_add_executor_job(_do_get, url, timeout)
                 if not resp:
-                    _LOGGER.debug("Snapshot request returned no response object for %s", url)
                     return None
-                _LOGGER.debug("Snapshot request %s returned %s", url, getattr(resp, 'status_code', None))
+                _LOGGER.debug("GET %s -> %s", url, getattr(resp, 'status_code', None))
                 if getattr(resp, 'status_code', None) == 200:
-                    ct = resp.headers.get('Content-Type', '')
-                    if 'image' in ct or resp.content:
-                        return resp.content
+                    content = resp.content
+                    if content and len(content) > 100:  # Sanity check for actual image data
+                        ct = resp.headers.get('Content-Type', '')
+                        if 'image' in ct or content[:3] in (b'\xff\xd8\xff', b'\x89PN', b'GIF'):
+                            _LOGGER.debug("Got valid image (%d bytes) from %s", len(content), url)
+                            return content
                 return None
             except Exception as e:
-                _LOGGER.debug("Snapshot request failed for %s: %s", url, e)
+                _LOGGER.debug("Error fetching %s: %s", url, e)
                 return None
 
-        # Candidate: ONVIF URL (if present)
-        onvif_url = None
-        rtmp_url = None
-        ip_address = None
-        for code, info in config.items():
-            pname = get_parameter_name(code)
-            if pname == 'ONVIF_URL' and info and isinstance(info, dict):
-                # Some config variants may have nested dicts
-                onvif_url = info.get('value') if isinstance(info, dict) else info
-            if pname == 'RTMP_STREAM' and info and isinstance(info, dict):
-                rtmp_url = info.get('value') if isinstance(info, dict) else info
-            if pname == 'IP_ADDRESS' and info and isinstance(info, dict):
-                ip_address = info.get('value') if isinstance(info, dict) else info
-
-        # If config holds simple string values instead of dicts
-        if not onvif_url and config.get('123'):
-            onvif_url = config.get('123')
-        if not rtmp_url and config.get('130'):
-            rtmp_url = config.get('130')
-        if not ip_address and config.get('126'):
-            ip_address = config.get('126')
-
-        # Try ONVIF URL first if it looks like an HTTP endpoint
-        if onvif_url and isinstance(onvif_url, str) and onvif_url.lower().startswith(('http://', 'https://')):
-            _LOGGER.debug("Attempting ONVIF URL snapshot: %s", onvif_url)
-            result = await _try_url(onvif_url)
+        # === PRIORITY 1: Cloud-stored thumbnail URL from device data ===
+        # This is the MOST RELIABLE source - stored in Meari cloud after motion events
+        thumbnail_url = device_data.get('thumbnail_url')
+        if thumbnail_url and isinstance(thumbnail_url, str) and thumbnail_url.startswith(('http://', 'https://')):
+            _LOGGER.debug("Trying cloud thumbnail URL: %s", thumbnail_url[:80])
+            result = await _try_url(thumbnail_url)
             if result:
                 return result
 
-        # Try RTMP/HTTP streams if they contain http(s) for snapshot thumbnail
-        if rtmp_url and isinstance(rtmp_url, str) and rtmp_url.lower().startswith(('http://', 'https://')):
-            _LOGGER.debug("Attempting RTMP/HTTP snapshot: %s", rtmp_url)
-            result = await _try_url(rtmp_url)
-            if result:
-                return result
-
-        # Try common snapshot CGI endpoints on the device's IP address
-        if ip_address:
-            candidates = [
-                f"http://{ip_address}/cgi-bin/snapshot.jpg",
-                f"http://{ip_address}/snapshot.jpg",
-                f"http://{ip_address}/capture.jpg",
-                f"http://{ip_address}/cgi-bin/snapshot.cgi",
-                f"http://{ip_address}/cgi-bin/jpg/image.cgi",
-            ]
-            for url in candidates:
-                _LOGGER.debug("Trying candidate snapshot URL: %s", url)
+        # === PRIORITY 2: Check device_info for any image URLs ===
+        # Some API responses include image URLs under various field names
+        for key in ['deviceImg', 'coverImgUrl', 'thumbUrl', 'imageUrl', 'alarmImgUrl', 'lastAlarmUrl']:
+            url = device_data.get(key)
+            if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                _LOGGER.debug("Trying device info URL (%s): %s", key, url[:80])
                 result = await _try_url(url)
                 if result:
                     return result
 
-        # Fallback: if the device_info contains a deviceImg or deviceTypeName with an HTTP URL, try that
-        # Some backends incorrectly return an image URL under deviceTypeName or deviceImg
-        device_img = device_data.get('deviceImg') or device_data.get('deviceImg')
-        device_type_name = device_data.get('deviceTypeName')
-        for candidate in (device_img, device_type_name):
-            if isinstance(candidate, str) and candidate.lower().startswith(('http://', 'https://')):
-                _LOGGER.debug("Attempting fallback device image URL: %s", candidate)
-                result = await _try_url(candidate)
-                if result:
-                    return result
+        # === PRIORITY 3: Check configuration for ONVIF/RTSP URLs ===
+        # Some devices may expose ONVIF or RTSP URLs that could have snapshot endpoints
+        config = device_data.get("configuration") or {}
+        
+        # Look for ONVIF URL (parameter code 123)
+        onvif_url = None
+        for code, info in config.items():
+            pname = get_parameter_name(code)
+            if pname == 'ONVIF_URL':
+                onvif_url = info.get('value') if isinstance(info, dict) else info
+                break
+        if not onvif_url:
+            onvif_url = config.get('123')
+        
+        if onvif_url and isinstance(onvif_url, str) and onvif_url.startswith(('http://', 'https://')):
+            _LOGGER.debug("Trying ONVIF URL: %s", onvif_url)
+            result = await _try_url(onvif_url)
+            if result:
+                return result
 
-        _LOGGER.debug("No snapshot available for %s", self._attr_name)
+        # === NO LOCAL IP ATTEMPTS ===
+        # CloudEdge/Meari cameras use TUTK P2P protocol and do NOT serve HTTP on their IP.
+        # Attempting local IPs just wastes time with connection timeouts.
+        # If you need live streaming, you would need to use RTSP with go2rtc or similar.
+
+        _LOGGER.debug("No snapshot available for %s - device uses P2P protocol without HTTP endpoints", self._attr_name)
         return None

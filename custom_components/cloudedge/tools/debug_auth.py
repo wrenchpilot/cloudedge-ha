@@ -61,6 +61,11 @@ def run_debug(username, password, country_code, phone_code, region, base_url, op
             print(f"Found {len(devices)} devices")
             for d in devices:
                 print(f"  - {d.get('name')} (SN: {d.get('serial_number')})")
+                # Show thumbnail URL if available
+                if d.get('thumbnail_url'):
+                    print(f"    thumbnail_url: {d.get('thumbnail_url')[:80]}...")
+                else:
+                    print(f"    thumbnail_url: NOT AVAILABLE (device uses P2P, no cloud thumbnail)")
         except Exception as e:
             print("Could not list devices:")
             traceback.print_exc()
