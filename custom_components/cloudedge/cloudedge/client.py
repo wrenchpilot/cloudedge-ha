@@ -2410,6 +2410,16 @@ class CloudEdgeClient:
                 except Exception:
                     data = None
 
+                # Diagnostic logging when debug enabled: show status and small body snippet
+                if self.debug:
+                    try:
+                        body_snippet = response.text[:500]
+                    except Exception:
+                        body_snippet = '<unavailable>'
+                    self._log(
+                        f"Snapshot endpoint {endpoint} returned status={response.status_code} content-type={content_type} body_snippet={body_snippet!r}"
+                    )
+
                 if isinstance(data, dict):
                     # Extract image URL or a numeric ID
                     result = data.get('result') or data
