@@ -182,20 +182,28 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
 
         config = device_data.get("configuration") or {}
 
-        # Helper: attempt url fetch using client's session to reuse cookies/headers
-        def _try_url(url: str) -> bytes | None:
+        # Helper: attempt url fetch using client's session to reuse cookies/headers.
+        # Must run sync request in an executor to avoid blocking the event loop.
+        def _do_get(url: str):
             try:
-                # Use coordinator client session if available
                 session = getattr(self.coordinator.client, '_session', None)
                 if session:
                     resp = session.get(url, timeout=10, verify=False)
                 else:
                     import requests
                     resp = requests.get(url, timeout=10, verify=False)
+                return resp
+            except Exception:
+                return None
 
-                _LOGGER.debug("Snapshot request %s returned %d", url, getattr(resp, 'status_code', None))
+        async def _try_url(url: str) -> bytes | None:
+            try:
+                resp = await self.hass.async_add_executor_job(_do_get, url)
+                if not resp:
+                    _LOGGER.debug("Snapshot request returned no response object for %s", url)
+                    return None
+                _LOGGER.debug("Snapshot request %s returned %s", url, getattr(resp, 'status_code', None))
                 if getattr(resp, 'status_code', None) == 200:
-                    # Ensure content is image/jpeg or at least non-empty
                     ct = resp.headers.get('Content-Type', '')
                     if 'image' in ct or resp.content:
                         return resp.content
@@ -229,14 +237,14 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         # Try ONVIF URL first if it looks like an HTTP endpoint
         if onvif_url and isinstance(onvif_url, str) and onvif_url.lower().startswith(('http://', 'https://')):
             _LOGGER.debug("Attempting ONVIF URL snapshot: %s", onvif_url)
-            result = _try_url(onvif_url)
+            result = await _try_url(onvif_url)
             if result:
                 return result
 
         # Try RTMP/HTTP streams if they contain http(s) for snapshot thumbnail
         if rtmp_url and isinstance(rtmp_url, str) and rtmp_url.lower().startswith(('http://', 'https://')):
             _LOGGER.debug("Attempting RTMP/HTTP snapshot: %s", rtmp_url)
-            result = _try_url(rtmp_url)
+            result = await _try_url(rtmp_url)
             if result:
                 return result
 
@@ -251,7 +259,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
             ]
             for url in candidates:
                 _LOGGER.debug("Trying candidate snapshot URL: %s", url)
-                result = _try_url(url)
+                result = await _try_url(url)
                 if result:
                     return result
 
@@ -262,7 +270,7 @@ class CloudEdgeCamera(CoordinatorEntity[CloudEdgeCoordinator], Camera):
         for candidate in (device_img, device_type_name):
             if isinstance(candidate, str) and candidate.lower().startswith(('http://', 'https://')):
                 _LOGGER.debug("Attempting fallback device image URL: %s", candidate)
-                result = _try_url(candidate)
+                result = await _try_url(candidate)
                 if result:
                     return result
 
