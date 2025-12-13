@@ -56,6 +56,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_OPENAPI_BASE_URL, default=""): str,
         vol.Optional(CONF_P2P_MODE, default=DEFAULT_P2P_MODE): vol.In([P2P_MODE_AUTO, P2P_MODE_DISABLED, P2P_MODE_FORCE_LOCAL]),
         vol.Optional(CONF_DEBUG, default=DEFAULT_DEBUG): bool,
+        vol.Optional(CONF_PROBE_ALLOW_INSECURE, default=DEFAULT_PROBE_ALLOW_INSECURE): bool,
     }
 )
 
@@ -80,6 +81,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     disable_p2p = (p2p_mode == P2P_MODE_DISABLED)
     force_local_p2p = (p2p_mode == P2P_MODE_FORCE_LOCAL)
     phone_code = data[CONF_PHONE_CODE]
+    probe_allow_insecure = data.get(CONF_PROBE_ALLOW_INSECURE, DEFAULT_PROBE_ALLOW_INSECURE)
 
     try:
         # Create client and test authentication
@@ -103,6 +105,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             base_url=base_url,
             openapi_base_url=openapi_base_url,
             p2p_mode=p2p_mode,
+            probe_allow_insecure=probe_allow_insecure,
         )
 
         # Test authentication
@@ -130,6 +133,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
         # Update incoming 'data' with any derived values (phone code)
         data[CONF_PHONE_CODE] = phone_code
+        data[CONF_PROBE_ALLOW_INSECURE] = probe_allow_insecure
 
         # Return info that will be stored in the config entry
         return {
@@ -226,9 +230,44 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle CloudEdge options via the UI."""
+
+    def __init__(self, config_entry):
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        errors = {}
+        if user_input is not None:
+            # Save options back to entry
+            new_data = dict(self.config_entry.data)
+            new_data.update(user_input)
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            return self.async_create_entry(title="", data={})
+
+        # Show form with current defaults
+        current = self.config_entry.data
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_DEBUG, default=current.get(CONF_DEBUG, DEFAULT_DEBUG)): bool,
+                vol.Optional(CONF_P2P_MODE, default=current.get(CONF_P2P_MODE, DEFAULT_P2P_MODE)):
+                    vol.In([P2P_MODE_AUTO, P2P_MODE_DISABLED, P2P_MODE_FORCE_LOCAL]),
+                vol.Optional(CONF_PROBE_ALLOW_INSECURE, default=current.get(CONF_PROBE_ALLOW_INSECURE, DEFAULT_PROBE_ALLOW_INSECURE)):
+                    bool,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
 
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+def async_get_options_flow(config_entry):
+    """Return the options flow handler."""
+    return OptionsFlowHandler(config_entry)

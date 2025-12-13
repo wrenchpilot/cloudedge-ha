@@ -29,12 +29,14 @@ from .const import (
     CONF_BASE_URL,
     CONF_OPENAPI_BASE_URL,
     CONF_P2P_MODE,
+    CONF_PROBE_ALLOW_INSECURE,
     CONF_DEBUG,
     P2P_MODE_DISABLED,
     P2P_MODE_FORCE_LOCAL,
     DEFAULT_P2P_MODE,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_REGION,
+    DEFAULT_PROBE_ALLOW_INSECURE,
 )
 from .services import async_setup_services, async_unload_services
 
@@ -201,6 +203,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
                     p2p_mode=p2p_mode,
+                    probe_allow_insecure=self.config_entry.data.get(CONF_PROBE_ALLOW_INSECURE, DEFAULT_PROBE_ALLOW_INSECURE),
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for validation for user %s (region=%s, base_url=%s)",
@@ -298,6 +301,7 @@ class CloudEdgeCoordinator(DataUpdateCoordinator):
                     base_url=self.config_entry.data.get(CONF_BASE_URL),
                     openapi_base_url=self.config_entry.data.get(CONF_OPENAPI_BASE_URL),
                     p2p_mode=p2p_mode,
+                    probe_allow_insecure=self.config_entry.data.get(CONF_PROBE_ALLOW_INSECURE, DEFAULT_PROBE_ALLOW_INSECURE),
                 )
                 _LOGGER.debug(
                     "CloudEdge client initialized for user %s (region=%s, base_url=%s)",

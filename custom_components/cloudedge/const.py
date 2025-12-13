@@ -13,6 +13,7 @@ CONF_P2P_MODE = "p2p_mode"
 CONF_DEBUG = "debug"
 CONF_PHONE_CODE = "phone_code"
 CONF_REFRESH_INTERVAL = "refresh_interval"
+CONF_PROBE_ALLOW_INSECURE = "probe_allow_insecure"
 
 # Default values
 DEFAULT_REFRESH_INTERVAL = 5  # minutes
@@ -52,6 +53,7 @@ P2P_MODE_DISABLED = "disabled"
 P2P_MODE_FORCE_LOCAL = "force_local"
 DEFAULT_DEBUG = False
 DEFAULT_P2P_MODE = P2P_MODE_DISABLED
+DEFAULT_PROBE_ALLOW_INSECURE = False
 
 # Device types mapping
 DEVICE_TYPE_CAMERA = "Camera"
