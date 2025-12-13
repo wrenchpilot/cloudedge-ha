@@ -1800,50 +1800,32 @@ class CloudEdgeClient:
         """
         Get alarm/motion events for a device with associated images.
         
-        This method attempts to fetch alarm messages from the CloudEdge API.
-        These contain motion/event thumbnails that can be used as camera snapshots.
-        
-        Based on Meari SDK documentation:
-        - getAlertMsg: for evt < 1 (old API)
-        - getAlertMsgWithVideo: for evt >= 1 (Cloud 2.0 API)
+        IMPORTANT: This requires an active cloud subscription (cloudSupport=1).
+        Cameras without cloud subscription will return empty results.
         
         Args:
             device_id (int): Device ID (numeric ID, not serial number)
             day (str): Date in format 'YYYYMMDD'. Defaults to today.
             index (str): Pagination index. "0" for latest (when direction=1).
-                        Pass eventTime of last message for direction=0.
             direction (int): 1 = refresh/latest (default), 0 = load more/older
-            event_type (int): Event type filter:
-                0 = all messages (default)
-                1 = motion, 2 = pir, 3 = bell, 6 = decibel, 7 = cry,
-                9 = baby, 10 = tear, 11 = human, 12 = face, 13 = safety
-            ai_types (List[int]): AI detection types (None = no filter):
-                0 = people, 1 = pet, 2 = car coming, 3 = car retention,
-                4 = car driving away, 5 = package dropping, 
-                6 = package retention, 7 = package taken
+            event_type (int): Event type filter (0 = all)
+            ai_types (List[int]): AI detection types (None = no filter)
             limit (int): Maximum number of events to return
             
         Returns:
-            List[Dict]: List of alarm events with image URLs
-            
-        Raises:
-            AuthenticationError: If not authenticated
-            NetworkError: If network request fails
+            List[Dict]: List of alarm events with image URLs, or empty list
         """
         if not self.session_data:
             raise AuthenticationError("Not authenticated - call authenticate() first")
             
-        # Default to today's date (format YYYYMMDD per SDK spec)
+        # Default to today's date
         if not day:
             day = datetime.datetime.now().strftime('%Y%m%d')
-            
-        self._log(f"Getting alarm events for device {device_id}, date {day}...")
         
         timestamp = self._generate_url_timestamp()
         nonce = int(time.time())
         
-        # Build the base parameters matching Meari SDK getAlertMsgWithVideo
-        # SDK spec: "Passing eventType=0 and aiType=null if you want to get all messages"
+        # Build request parameters
         base_params = {
             'appVer': '5.5.1',
             'appVerCode': '551',
@@ -1863,226 +1845,60 @@ class CloudEdgeClient:
             'userToken': self.session_data['userToken']
         }
         
-        # Only add aiType if specifically provided (SDK says pass null for all)
         if ai_types is not None:
             base_params['aiType'] = ",".join(str(t) for t in ai_types)
         
-        # List of potential endpoints based on Meari SDK method names:
-        # - getAlertMsg (old API, evt < 1)
-        # - getAlertMsgWithVideo (Cloud 2.0, evt >= 1)
-        # The test showed /v1/app/msg/alert/list returns 1023 (exists but wrong params)
-        potential_endpoints = [
-            '/v1/app/msg/alert/list',          # SDK getAlertMsg - RETURNED 1023 (exists!)
-            '/v1/app/msg/alertWithVideo/list', # SDK getAlertMsgWithVideo pattern
-            '/v1/app/msg/alarm/list',          # Alternative naming
-            '/v1/app/device/alarm/list',       # Device-prefixed
-            '/v1/app/device/alert/list',       # Device-prefixed alert
-            '/v1/app/alert/list',              # Simplified
-            '/v1/app/alarm/list',              # Simplified
-            '/v1/app/alertMsg/list',           # camelCase
-            '/v1/app/alarmMsg/list',           # camelCase variant
-        ]
-        
-        # Generate X-Ca headers
+        # Generate headers and signature
         params_str = "&".join(f"{k}={v}" for k, v in sorted(base_params.items()))
         xca_headers = self._generate_xca_headers(params_str, self.session_data['userToken'])
         
         headers = {
             "Accept-Language": "en-US,en;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
+            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us) AppleWebKit/533.1",
             "Accept-Encoding": "gzip, deflate, br"
         }
         headers.update(xca_headers)
         
-        # Generate signature
         signature = self._generate_api_signature(params_str, self.session_data.get('userToken'))
         signature_encoded = quote(signature)
         
-        # Try each potential endpoint
-        last_error = None
+        # Try the known working endpoint: /v1/app/msg/alert/list
+        # This endpoint returns:
+        # - 1001: Success with events
+        # - 1003: No permission (no cloud subscription) 
+        # - 1023: Invalid parameters or no events
+        endpoint = '/v1/app/msg/alert/list'
+        url = f"{self.BASE_URL}{endpoint}?{params_str}&signature={signature_encoded}"
         
-        # FIRST: Try /v1/app/msg/alert/list as POST (it exists but returns 1023 on GET)
-        # The endpoint responds (not 404) so try with POST body format like get_devices
-        post_body = self._generate_device_body({
-            'deviceID': str(device_id),
-            'day': day,
-            'index': index,
-            'direction': str(direction),
-            'eventType': str(event_type),
-        })
-        
-        post_headers = {
-            "Accept": "*/*",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept-Encoding": "gzip, deflate, br",
-            "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
-            "Accept-Language": "en-US,en;q=1"
-        }
-        
-        post_endpoints = [
-            '/v1/app/msg/alert/list',   # This one EXISTS (returns 1023, not 404)
-            '/ppstrongs/getAlertMsg.action',
-        ]
-        
-        for endpoint in post_endpoints:
-            try:
-                # Use direct session call to skip retry on 404
-                response = self._session.post(
-                    f"{self.BASE_URL}{endpoint}",
-                    headers=post_headers,
-                    data=post_body,
-                    timeout=DEFAULT_TIMEOUT
-                )
-                
-                if response.status_code == 404:
-                    if self.debug:
-                        self._log(f"POST {endpoint} returned 404 - skipping")
-                    continue
-                    
-                if response.status_code == 200:
-                    response_data = response.json()
-                    if self.debug:
-                        self._log(f"POST alarm response from {endpoint}: {json.dumps(response_data)[:500]}")
-                    
-                    if response_data.get('resultCode') in (1001, '1001', 0, '0', 'success'):
-                        events = self._parse_alarm_events(response_data.get('result', {}))
-                        if events:
-                            self._log(f"Found {len(events)} alarm events from POST {endpoint}")
-                            return events[:limit]
-                        self._log(f"POST {endpoint} returned success but no events")
-                        return []
-                    elif self.debug:
-                        self._log(f"POST {endpoint} returned code: {response_data.get('resultCode')}, msg: {response_data.get('resultMsg')}")
-                        
-            except requests.exceptions.RequestException as e:
-                if self.debug:
-                    self._log(f"POST {endpoint} request failed: {e}")
-                continue
-            except json.JSONDecodeError:
-                if self.debug:
-                    self._log(f"POST {endpoint} returned invalid JSON")
-                continue
-        
-        # SECOND: Try GET endpoints with signature (no retries on 404 to speed things up)
-        for endpoint in potential_endpoints:
-            url = f"{self.BASE_URL}{endpoint}?{params_str}&signature={signature_encoded}"
+        try:
+            response = self._make_request('GET', url, headers=headers, timeout=DEFAULT_TIMEOUT)
+            response_data = response.json()
+            result_code = response_data.get('resultCode')
             
-            try:
-                # Use direct session call to avoid retry decorator on 404s
-                response = self._session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                
-                if response.status_code == 404:
-                    if self.debug:
-                        self._log(f"Endpoint {endpoint} returned 404 - skipping")
-                    continue
-                    
-                if response.status_code == 200:
-                    response_data = response.json()
-                    if self.debug:
-                        self._log(f"Alarm API response from {endpoint}: {json.dumps(response_data)[:500]}")
-                    
-                    # Check for success
-                    if response_data.get('resultCode') in (1001, '1001', 0, '0', 'success'):
-                        events = self._parse_alarm_events(response_data.get('result', {}))
-                        if events:
-                            self._log(f"Found {len(events)} alarm events from {endpoint}")
-                            return events[:limit]
-                        # Empty but successful - endpoint exists
-                        self._log(f"Endpoint {endpoint} returned success but no events")
-                        return []
-                    elif response_data.get('resultCode') not in (1006, '1006'):  # 1006 = invalid endpoint
-                        # Endpoint exists but returned an error
-                        self._log(f"Endpoint {endpoint} returned error: {response_data.get('resultMsg')}")
-                        
-            except requests.exceptions.RequestException as e:
-                last_error = e
+            if result_code in (1001, '1001'):
+                events = self._parse_alarm_events(response_data.get('result', {}))
+                if events:
+                    self._log(f"Found {len(events)} alarm events")
+                return events[:limit]
+            elif result_code in (1003, '1003'):
+                # No cloud subscription - don't spam logs, just return empty
                 if self.debug:
-                    self._log(f"Endpoint {endpoint} request failed: {e}")
-                continue
-            except json.JSONDecodeError:
+                    self._log("Alarm API requires cloud subscription (cloudSupport=1)")
+                return []
+            elif result_code in (1023, '1023'):
+                # No events or invalid params
+                return []
+            else:
                 if self.debug:
-                    self._log(f"Endpoint {endpoint} returned invalid JSON")
-                continue
+                    self._log(f"Alarm API returned code {result_code}")
+                return []
                 
-        # All endpoints failed - try OpenAPI approach
-        self._log("Standard endpoints failed, trying OpenAPI alarm endpoint...")
-        return self._get_alarm_events_openapi(device_id, day, limit)
-        
-    def _get_alarm_events_openapi(self, device_id: int, day: str, limit: int) -> List[Dict]:
-        """
-        Fallback: Try to get alarm events via OpenAPI endpoint.
-        
-        Args:
-            device_id (int): Device ID
-            day (str): Date in YYYYMMDD format
-            limit (int): Maximum events to return
-            
-        Returns:
-            List[Dict]: Alarm events or empty list
-        """
-        iot_keys = self.session_data.get('iotPlatformKeys', {})
-        if not iot_keys or 'accessid' not in iot_keys:
-            self._log("No OpenAPI credentials available for alarm events")
+        except requests.exceptions.RequestException as e:
+            if self.debug:
+                self._log(f"Alarm API request failed: {e}")
             return []
-            
-        access_id = iot_keys['accessid']
-        access_key = iot_keys['accesskey']
-        openapi_base = iot_keys.get('openapidomain') or self.OPENAPI_BASE_URL
-        
-        # Try OpenAPI alarm endpoint patterns
-        openapi_endpoints = [
-            '/openapi/device/alarm/list',
-            '/openapi/alarm/list',
-            '/openapi/msg/alarm/list',
-            '/openapi/alert/list',
-            '/openapi/device/alert/list',
-            '/openapi/device/event/list',
-            '/openapi/event/list',
-        ]
-        
-        for endpoint in openapi_endpoints:
-            try:
-                signature, timeout = self._get_signature_for_openapi(endpoint, 'get', access_key)
-                
-                params = {
-                    'accessid': access_id,
-                    'expires': timeout,
-                    'signature': signature,
-                    'action': 'get',
-                    'deviceid': str(device_id),
-                    'day': day,
-                }
-                
-                headers = {
-                    "Accept": "*/*",
-                    "User-Agent": "Mozilla/5.0 (Linux; U; Android 10; en-us; Android SDK built for arm64 Build/QSR1.211112.002) AppleWebKit/533.1 (KHTML, like Gecko) Version/5.0 Mobile Safari/533.1",
-                    "X-Ca-Key": CA_KEY
-                }
-                
-                response = self._make_request(
-                    'GET',
-                    f"{openapi_base}{endpoint}",
-                    headers=headers,
-                    params=params,
-                    timeout=DEFAULT_TIMEOUT
-                )
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    if self.debug:
-                        self._log(f"OpenAPI alarm response from {endpoint}: {json.dumps(response_data)[:500]}")
-                    
-                    events = self._parse_alarm_events(response_data.get('result', {}))
-                    if events:
-                        return events[:limit]
-                        
-            except Exception as e:
-                if self.debug:
-                    self._log(f"OpenAPI endpoint {endpoint} failed: {e}")
-                continue
-                
-        self._log("All alarm API endpoints failed - alarm images not available")
-        return []
+        except json.JSONDecodeError:
+            return []
         
     def _parse_alarm_events(self, result: Union[Dict, List]) -> List[Dict]:
         """
@@ -2284,6 +2100,9 @@ class CloudEdgeClient:
         This is a convenience method that fetches the most recent alarm event
         and downloads/decrypts its associated image.
         
+        Note: Requires active cloud subscription (cloudSupport=1).
+        Returns None silently if no subscription.
+        
         Args:
             device_id (int): Device ID (numeric)
             device_serial (str): Device serial number (for decryption)
@@ -2292,19 +2111,21 @@ class CloudEdgeClient:
             Optional[bytes]: JPEG image data or None if not available
         """
         try:
-            # Get latest events
+            # Get latest events (returns empty list if no cloud subscription)
             events = self.get_alarm_events(device_id, limit=1)
             if not events:
-                self._log("No alarm events found for image")
+                # Don't log - this is expected for cameras without cloud subscription
                 return None
                 
             latest = events[0]
             image_url = latest.get('image_url')
             if not image_url:
-                self._log("Latest alarm event has no image URL")
+                if self.debug:
+                    self._log("Latest alarm event has no image URL")
                 return None
                 
-            self._log(f"Fetching alarm image from: {image_url}")
+            if self.debug:
+                self._log(f"Fetching alarm image from: {image_url[:80]}...")
             
             # Download image
             response = self._make_request(
@@ -2314,19 +2135,22 @@ class CloudEdgeClient:
             )
             
             if response.status_code != 200:
-                self._log(f"Failed to download alarm image: HTTP {response.status_code}")
+                if self.debug:
+                    self._log(f"Failed to download alarm image: HTTP {response.status_code}")
                 return None
                 
             image_data = response.content
             
             # Decrypt if necessary
             if latest.get('is_encrypted'):
-                self._log(f"Decrypting encrypted image...")
+                if self.debug:
+                    self._log("Decrypting encrypted image...")
                 image_data = self.decrypt_alarm_image(image_data, device_serial, image_url)
                 
             # Validate JPEG header
             if image_data[:2] != b'\xff\xd8':
-                self._log("Warning: Decrypted image does not have valid JPEG header")
+                if self.debug:
+                    self._log("Warning: Decrypted image does not have valid JPEG header")
                 # Try without decryption as fallback
                 if response.content[:2] == b'\xff\xd8':
                     return response.content
@@ -2334,5 +2158,6 @@ class CloudEdgeClient:
             return image_data
             
         except Exception as e:
-            self._log(f"Failed to get latest alarm image: {e}")
+            if self.debug:
+                self._log(f"Failed to get latest alarm image: {e}")
             return None
